@@ -1332,9 +1332,9 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	for(i = 1; i < nvec; i++) {
 		if (!cpumask_empty(filter_mask1[j])) {
 			cpu_first = cpumask_first(filter_mask1[j]);
-			if (cpu_to_node(cpu) != numa_node)
-				continue;
 			dev_err(gc->dev, "irq is %d and cpu is %d and numa %d core %d cpumask %*pbx\n", irqs[i], cpu_first, numa_node, j, cpumask_pr_args(filter_mask1[j]));
+			if (cpu_to_node(cpu_first) != numa_node)
+				continue;
 			//irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu_first));
 			cpumask_clear_cpu(cpu_first, filter_mask1[j]);
 			dev_err(gc->dev, "cpumask after zeroing %*pbx\n", cpumask_pr_args(filter_mask1[j]));
