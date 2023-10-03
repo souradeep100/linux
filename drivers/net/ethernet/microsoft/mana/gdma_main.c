@@ -1299,7 +1299,6 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 			goto free_irq;
 
 		//cpu = cpumask_local_spread(i, gc->numa_node);
-		
 		cpu = cpumask_local_spread(i, gc->numa_node);
 		irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu));
 		if(!flag && cpu) {
@@ -1333,18 +1332,16 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 		cpu_first = cpumask_first(filter_mask1[j]);
 		if (!cpumask_empty(filter_mask1[j]) && cpu_to_node(cpu_first) == numa_node) {
 			dev_err(gc->dev, "irq is %d and cpu is %d and numa \
-				%d core %d cpumask %*pbx\n", i,
-				cpu_first, numa_node, j, cpumask_pr_args(filter_mask1[j]));
+				%d core %d\n", i,
+				cpu_first, numa_node, j);
 			
 			//irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu_first));
 			cpumask_clear_cpu(cpu_first, filter_mask1[j]);
-			dev_err(gc->dev, "cpumask after zeroing %*pbx\n", cpumask_pr_args(filter_mask1[j]));
+			//dev_err(gc->dev, "cpumask after zeroing %*pbx\n", cpumask_pr_args(filter_mask1[j]));
 			cpu_count = cpu_count + 1;
-			dev_err(gc->dev, "cpu_count increased to %d cpu %d \n", cpu_count, cpu_first);
 			i = i + 1;
 			if (cpu_count == nr_cpus_node(numa_node)) {
 				numa_node = numa_node + 1;
-				dev_err(gc->dev, "cpu_count %d\n", cpu_count);
 				cpu_count = 0;
 				j = 0;
 				continue;
