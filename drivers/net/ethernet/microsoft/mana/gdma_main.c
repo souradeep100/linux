@@ -1303,7 +1303,7 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 		cpu = cpumask_local_spread(i, gc->numa_node);
 		irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu));
 		if(!flag && cpu) {
-			cpu_cores = max_queues_per_port / cpumask_weight(topology_sibling_cpumask(cpu));
+			cpu_cores = num_online_cpus() / cpumask_weight(topology_sibling_cpumask(cpu));
 			dev_err(gc->dev, "the number of cores %d\n", cpu_cores);
 			filter_mask1 = kcalloc(cpu_cores, sizeof(cpumask_var_t), GFP_KERNEL);
 			flag = 1;
@@ -1332,9 +1332,17 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	for(i = 1; i < nvec; i++) {
 		if (!cpumask_empty(filter_mask1[j])) {
 			cpu_first = cpumask_first(filter_mask1[j]);
-			dev_err(gc->dev, "irq is %d and cpu is %d and numa %d core %d cpumask %*pbx\n", irqs[i], cpu_first, numa_node, j, cpumask_pr_args(filter_mask1[j]));
-			if (cpu_to_node(cpu_first) != numa_node)
+			dev_err(gc->dev, "irq is %d and cpu is %d and numa \
+				%d core %d cpumask %*pbx\n", irqs[i],
+				cpu_first, numa_node, j, cpumask_pr_args(filter_mask1[j]));
+			if (cpu_to_node(cpu_first) != numa_node) {
+				i = i - 1;
+				if (j % (cpu_cores - 1) == 0 && j != 0)
+					j = 0;
+				else
+					j = j + 1;
 				continue;
+			}
 			//irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu_first));
 			cpumask_clear_cpu(cpu_first, filter_mask1[j]);
 			dev_err(gc->dev, "cpumask after zeroing %*pbx\n", cpumask_pr_args(filter_mask1[j]));
@@ -1344,11 +1352,10 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 				cpu_count = 0;
 			}
 		}
-				
+
+		j = j + 1;
 		if (j % (cpu_cores - 1) == 0 && j != 0)
 			j = 0;
-		else
-			j = j + 1;
 
 	}
 	cpus_read_unlock();
