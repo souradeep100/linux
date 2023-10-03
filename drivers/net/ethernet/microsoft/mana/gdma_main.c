@@ -1255,7 +1255,7 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	cpumask_var_t *filter_mask1;
 	int flag = 0;
 	int cpu_cores;
-	int numa_node, cpu_count;
+	int numa_node, cpu_count = 0;
 
 	if (max_queues_per_port > MANA_MAX_NUM_QUEUES)
 		max_queues_per_port = MANA_MAX_NUM_QUEUES;
@@ -1329,20 +1329,22 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 
 	j = 0;
 	numa_node = 0;
-	for(i = 1; i < nvec; ) {
+	for(i = 1; i < 120; ) {
 		cpu_first = cpumask_first(filter_mask1[j]);
 		if (!cpumask_empty(filter_mask1[j]) && cpu_to_node(cpu_first) == numa_node) {
 			dev_err(gc->dev, "irq is %d and cpu is %d and numa \
-				%d core %d cpumask %*pbx\n", irqs[i],
+				%d core %d cpumask %*pbx\n", i,
 				cpu_first, numa_node, j, cpumask_pr_args(filter_mask1[j]));
 			
 			//irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu_first));
 			cpumask_clear_cpu(cpu_first, filter_mask1[j]);
 			dev_err(gc->dev, "cpumask after zeroing %*pbx\n", cpumask_pr_args(filter_mask1[j]));
 			cpu_count = cpu_count + 1;
+			dev_err(gc->dev, "cpu_count increased to %d cpu %d \n", cpu_count, cpu_first);
 			i = i + 1;
 			if (cpu_count == nr_cpus_node(numa_node)) {
 				numa_node = numa_node + 1;
+				dev_err(gc->dev, "cpu_count %d\n", cpu_count);
 				cpu_count = 0;
 				j = 0;
 				continue;
