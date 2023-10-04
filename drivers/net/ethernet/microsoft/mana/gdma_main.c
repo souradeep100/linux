@@ -1299,13 +1299,9 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 
 		//cpu = cpumask_local_spread(i, gc->numa_node);
 		
-		cpu = cpumask_local_spread(i, gc->numa_node);
-		if (!i)
+		if(!flag) {
+			cpu = cpumask_local_spread(0, gc->numa_node);
 			irq_set_affinity_and_hint(irqs[0], cpumask_of(cpu));
-		if(!flag && cpu) {
-			cpu_cores = max_queues_per_port / cpumask_weight(topology_sibling_cpumask(cpu));
-			dev_err(gc->dev, "the number of cores %d\n", cpu_cores);
-			filter_mask1 = kcalloc(cpu_cores, sizeof(cpumask_var_t), GFP_KERNEL);
 			flag = 1;
 		}
 	}
@@ -1314,27 +1310,26 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	cpus_read_lock();
 	cpumask_copy(filter_mask, cpu_online_mask);
 	for_each_cpu(cpu, filter_mask) {
+		cpumask_andnot(filter_mask, filter_mask, topology_sibling_cpumask(cpu));
+	}
+	cpu_cores = cpumask_weight(filter_mask);
+	dev_err(gc->dev, "number of cores %d\n", cpu_cores);
+	filter_mask1 = kcalloc(cpu_cores, sizeof(cpumask_var_t), GFP_KERNEL);
+
+	for_each_cpu(cpu, filter_mask) {
 		dev_err(gc->dev, "cpu %d \n", cpu);
 		BUG_ON(!alloc_cpumask_var(&filter_mask1[j], GFP_KERNEL));
 		cpumask_or(filter_mask1[j], filter_mask1[j], topology_sibling_cpumask(cpu));
-		cpumask_andnot(filter_mask, filter_mask, topology_sibling_cpumask(cpu));
 		dev_err(gc->dev, "irq is %d and cpu is %d count %d nvec %d\n", irqs[j], cpu, j, nvec);
 		j++;
 	}
-	for (i = 0; i < cpu_cores; i++) {
-		for_each_cpu(cpu_first, filter_mask1[i]) {
-			dev_err(gc->dev, "the cpu for core %d is %d\n", i, cpu_first);
-		}
-	}
 
-	j = 0;
-	for(i = 1; i < nvec; i++) {
+	for(j = 0, i = 1; i < nvec; i++) {
 		cpu_first = cpumask_first(filter_mask1[j]);
 		dev_err(gc->dev, "irq is %d and cpu is %d and i %d core %d cpumask %*pbx\n", irqs[i], cpu_first, i, j, cpumask_pr_args(filter_mask1[j]));
 		irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu_first));
 		cpumask_clear_cpu(cpu_first, filter_mask1[j]);
-		dev_err(gc->dev, "cpumask after zeroing %*pbx\n", cpumask_pr_args(filter_mask1[j]));
-		if (j % (cpu_cores - 1) == 0 && j != 0)
+		if ((j+1) % cpu_cores == 0)
 			j = 0;
 		else
 			j = j + 1;
