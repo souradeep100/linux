@@ -1307,23 +1307,39 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	}
 
 	j = 0;
+	cpu_cores = 0;
+	
 	cpus_read_lock();
 	cpumask_copy(filter_mask, cpu_online_mask);
+	/*
+	 * count the cores
+	 */
 	for_each_cpu(cpu, filter_mask) {
 		cpumask_andnot(filter_mask, filter_mask, topology_sibling_cpumask(cpu));
+		cpu_cores++;
 	}
-	cpu_cores = cpumask_weight(filter_mask);
 	dev_err(gc->dev, "number of cores %d\n", cpu_cores);
 	filter_mask1 = kcalloc(cpu_cores, sizeof(cpumask_var_t), GFP_KERNEL);
 
+	cpumask_copy(filter_mask, cpu_online_mask);
+	/*
+	 * for each core create a cpumask lookup table,
+	 * which stores all the corresponding siblings
+	 */
 	for_each_cpu(cpu, filter_mask) {
 		dev_err(gc->dev, "cpu %d \n", cpu);
 		BUG_ON(!alloc_cpumask_var(&filter_mask1[j], GFP_KERNEL));
 		cpumask_or(filter_mask1[j], filter_mask1[j], topology_sibling_cpumask(cpu));
+		cpumask_andnot(filter_mask, filter_mask, topology_sibling_cpumask(cpu));
 		dev_err(gc->dev, "irq is %d and cpu is %d count %d nvec %d\n", irqs[j], cpu, j, nvec);
 		j++;
 	}
-
+	/*
+	 * loop through total intrs and assign intr to each cores
+	 * single cpu first and clear that cpu from the mask of that core
+	 * , and then if each core is used, then 
+	 * go back to initial core and assign the next cpu.
+	 */
 	for(j = 0, i = 1; i < nvec; i++) {
 		cpu_first = cpumask_first(filter_mask1[j]);
 		dev_err(gc->dev, "irq is %d and cpu is %d and i %d core %d cpumask %*pbx\n", irqs[i], cpu_first, i, j, cpumask_pr_args(filter_mask1[j]));
