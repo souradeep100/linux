@@ -1252,7 +1252,7 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	int nvec, *irqs, irq;
 	int err, i = 0, j;
 	cpumask_var_t filter_mask;
-	cpumask_var_t *filter_mask1;
+	cpumask_var_t *filter_mask_list;
 	int flag = 0;
 	int cpu_cores;
 
@@ -1319,7 +1319,7 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 		cpu_cores++;
 	}
 	dev_err(gc->dev, "number of cores %d\n", cpu_cores);
-	filter_mask1 = kcalloc(cpu_cores, sizeof(cpumask_var_t), GFP_KERNEL);
+	filter_mask_list = kcalloc(cpu_cores, sizeof(cpumask_var_t), GFP_KERNEL);
 
 	cpumask_copy(filter_mask, cpu_online_mask);
 	/*
@@ -1328,8 +1328,8 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	 */
 	for_each_cpu(cpu, filter_mask) {
 		dev_err(gc->dev, "cpu %d \n", cpu);
-		BUG_ON(!alloc_cpumask_var(&filter_mask1[j], GFP_KERNEL));
-		cpumask_or(filter_mask1[j], filter_mask1[j], topology_sibling_cpumask(cpu));
+		BUG_ON(!alloc_cpumask_var(&filter_mask_list[j], GFP_KERNEL));
+		cpumask_or(filter_mask_list[j], filter_mask_list[j], topology_sibling_cpumask(cpu));
 		cpumask_andnot(filter_mask, filter_mask, topology_sibling_cpumask(cpu));
 		dev_err(gc->dev, "irq is %d and cpu is %d count %d nvec %d\n", irqs[j], cpu, j, nvec);
 		j++;
@@ -1341,10 +1341,10 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	 * go back to initial core and assign the next cpu.
 	 */
 	for(j = 0, i = 1; i < nvec; i++) {
-		cpu_first = cpumask_first(filter_mask1[j]);
-		dev_err(gc->dev, "irq is %d and cpu is %d and i %d core %d cpumask %*pbx\n", irqs[i], cpu_first, i, j, cpumask_pr_args(filter_mask1[j]));
+		cpu_first = cpumask_first(filter_mask_list[j]);
+		dev_err(gc->dev, "irq is %d and cpu is %d and i %d core %d cpumask %*pbx\n", irqs[i], cpu_first, i, j, cpumask_pr_args(filter_mask_list[j]));
 		irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu_first));
-		cpumask_clear_cpu(cpu_first, filter_mask1[j]);
+		cpumask_clear_cpu(cpu_first, filter_mask_list[j]);
 		if ((j+1) % cpu_cores == 0)
 			j = 0;
 		else
@@ -1359,6 +1359,10 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	gc->max_num_msix = nvec;
 	gc->num_msix_usable = nvec;
 	free_cpumask_var(filter_mask);
+	
+        for (j = 0; j < cpu_cores; j++)
+                free_cpumask_var(filter_mask_list[j]);
+        kfree(filter_mask_list);
 	return 0;
 
 free_irq:
