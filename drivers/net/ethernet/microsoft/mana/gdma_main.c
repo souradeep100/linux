@@ -1252,7 +1252,7 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	int nvec, *irqs, irq;
 	int err, i = 0, j;
 	cpumask_var_t filter_mask;
-	cpumask_var_t *filter_mask1;
+	cpumask_var_t *filter_mask_list;
 	int flag = 0;
 	int cpu_cores;
 	int numa_node, cpu_count = 0;
@@ -1302,42 +1302,59 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 		if(!flag) {
 			cpu = cpumask_local_spread(0, gc->numa_node);
 			irq_set_affinity_and_hint(irqs[0], cpumask_of(cpu));
-			cpu_cores = num_online_cpus() / cpumask_weight(topology_sibling_cpumask(cpu));
-			dev_err(gc->dev, "the number of cores %d\n", cpu_cores);
-			filter_mask1 = kcalloc(cpu_cores, sizeof(cpumask_var_t), GFP_KERNEL);
 			flag = 1;
 		}
 	}
 
 	j = 0;
+	cpu_cores = 0;
+
 	cpus_read_lock();
 	cpumask_copy(filter_mask, cpu_online_mask);
+	/*
+	 * count the cores
+	 */
+	for_each_cpu(cpu, filter_mask) {
+		cpumask_andnot(filter_mask, filter_mask, topology_sibling_cpumask(cpu));
+		cpu_cores++;
+	}
+	dev_err(gc->dev, "number of cores %d\n", cpu_cores);
+	filter_mask_list = kcalloc(cpu_cores, sizeof(cpumask_var_t), GFP_KERNEL);
+	
+	cpumask_copy(filter_mask, cpu_online_mask);
+	/*
+	 * for each core create a cpumask lookup table,
+	 * which stores all the corresponding siblings
+	 */
+
 	for_each_cpu(cpu, filter_mask) {
 		dev_err(gc->dev, "cpu %d \n", cpu);
-		BUG_ON(!alloc_cpumask_var(&filter_mask1[j], GFP_KERNEL));
-		cpumask_or(filter_mask1[j], filter_mask1[j], topology_sibling_cpumask(cpu));
+		BUG_ON(!alloc_cpumask_var(&filter_mask_list[j], GFP_KERNEL));
+		cpumask_or(filter_mask_list[j], filter_mask_list[j], topology_sibling_cpumask(cpu));
 		cpumask_andnot(filter_mask, filter_mask, topology_sibling_cpumask(cpu));
-		dev_err(gc->dev, "irq is %d and cpu is %d count %d nvec %d\n", irqs[j], cpu, j, nvec);
 		j++;
-	}
-	for (i = 0; i < cpu_cores; i++) {
-		for_each_cpu(cpu_first, filter_mask1[i]) {
-			dev_err(gc->dev, "the cpu for core %d is %d\n", i, cpu_first);
-		}
 	}
 
 	j = 0;
 	numa_node = 0;
+	/*
+	 * for each interrupt find the cpu of a particular
+	 * core and if it belongs to the specific numa
+	 * then assign irq to it and clear the cpu bit from
+	 * the sibling list from filter_msak_list. Increase
+	 * the cpu_count for that node.
+	 * Once all cpus for a numa node is assigned, then
+	 * move to different numa node and continue the same.
+	 */
 	for(i = 1; i < nvec; ) {
-		cpu_first = cpumask_first(filter_mask1[j]);
-		if (!cpumask_empty(filter_mask1[j]) && cpu_to_node(cpu_first) == numa_node) {
+		cpu_first = cpumask_first(filter_mask_list[j]);
+		if (!cpumask_empty(filter_mask_list[j]) && cpu_to_node(cpu_first) == numa_node) {
 			dev_err(gc->dev, "irq is %d and cpu is %d and numa \
 				%d core %d\n", irqs[i],
 				cpu_first, numa_node, j);
 			
 			irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu_first));
-			cpumask_clear_cpu(cpu_first, filter_mask1[j]);
-			//dev_err(gc->dev, "cpumask after zeroing %*pbx\n", cpumask_pr_args(filter_mask1[j]));
+			cpumask_clear_cpu(cpu_first, filter_mask_list[j]);
 			cpu_count = cpu_count + 1;
 			i = i + 1;
 			if (cpu_count == nr_cpus_node(numa_node)) {
@@ -1347,11 +1364,10 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 				continue;
 			}
 		}
-
-		j = j + 1;
-		if (j % (cpu_cores - 1) == 0 && j != 0)
+		if ((j+1) % cpu_cores == 0)
 			j = 0;
-
+		else
+			j++;
 	}
 	cpus_read_unlock();
 
@@ -1362,6 +1378,9 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	gc->max_num_msix = nvec;
 	gc->num_msix_usable = nvec;
 	free_cpumask_var(filter_mask);
+	for (j = 0; j < cpu_cores; j++)
+		free_cpumask_var(filter_mask_list[j]);
+	kfree(filter_mask_list);
 	return 0;
 
 free_irq:
