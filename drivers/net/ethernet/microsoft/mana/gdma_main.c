@@ -1243,6 +1243,8 @@ void mana_gd_free_res_map(struct gdma_resource *r)
 	r->size = 0;
 }
 
+
+
 static void irq_setup(int *irqs, int nvec)
 {
 	int i, j = 0, numa_node, cpu_count = 0, cpu_cores = 0;
@@ -1289,12 +1291,12 @@ static void irq_setup(int *irqs, int nvec)
 	 * Once all cpus for a numa node is assigned, then
 	 * move to different numa node and continue the same.
 	 */
-	for(i = 1; i < nvec; ) {
+	for(i = 0; i < nvec; ) {
 		cpu_first = cpumask_first(filter_mask_list[j]);
 		if (!cpumask_empty(filter_mask_list[j]) && cpu_to_node(cpu_first) == numa_node) {
-			//dev_err(gc->dev, "irq is %d and cpu is %d and numa \
-			//	%d core %d\n", irqs[i],
-			//	cpu_first, numa_node, j);
+			pr_err("irq is %d and cpu is %d and numa \
+				%d core %d\n", irqs[i],
+				cpu_first, numa_node, j);
 			
 			irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu_first));
 			cpumask_clear_cpu(cpu_first, filter_mask_list[j]);
@@ -1323,16 +1325,15 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	unsigned int max_queues_per_port = num_online_cpus();
 	struct gdma_context *gc = pci_get_drvdata(pdev);
 	struct gdma_irq_context *gic;
-	unsigned int max_irqs, cpu;
+	unsigned int max_irqs;
 	int nvec, *irqs, irq;
 	int err, i = 0, j;
-	int flag = 0;
 
 	if (max_queues_per_port > MANA_MAX_NUM_QUEUES)
 		max_queues_per_port = MANA_MAX_NUM_QUEUES;
 
 	/* Need 1 interrupt for the Hardware communication Channel (HWC) */
-	max_irqs = max_queues_per_port + 1;
+	max_irqs = 32 + 1;
 
 	nvec = pci_alloc_irq_vectors(pdev, 2, max_irqs, PCI_IRQ_MSIX);
 	if (nvec < 0)
@@ -1369,11 +1370,6 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 			goto free_irq;
 
 		//cpu = cpumask_local_spread(i, gc->numa_node);
-		if(!flag) {
-			cpu = cpumask_local_spread(0, gc->numa_node);
-			irq_set_affinity_and_hint(irqs[0], cpumask_of(cpu));
-			flag = 1;
-		}
 	}
 
 	irq_setup(irqs, nvec);
