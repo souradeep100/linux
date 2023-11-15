@@ -1245,16 +1245,18 @@ void mana_gd_free_res_map(struct gdma_resource *r)
 
 static void cpu_mask_set(cpumask_var_t *filter_mask, cpumask_var_t **filter_mask_list)
 {
+	cpumask_var_t *filter_mask_list_tmp;
 	unsigned int core_count = 0, cpu;
 	BUG_ON(!filter_mask || !filter_mask_list);
+	filter_mask_list_tmp = *filter_mask_list;
 	cpumask_copy(*filter_mask, cpu_online_mask);
 	/*
 	 * for each core create a cpumask lookup table,
 	 * which stores all the corresponding siblings
 	 */
 	for_each_cpu(cpu, *filter_mask) {
-		BUG_ON(!alloc_cpumask_var(filter_mask_list[core_count], GFP_KERNEL));
-		cpumask_or(*filter_mask_list[core_count], *filter_mask_list[core_count],
+		BUG_ON(!alloc_cpumask_var(&filter_mask_list_tmp[core_count], GFP_KERNEL));
+		cpumask_or(filter_mask_list_tmp[core_count], filter_mask_list_tmp[core_count],
 				topology_sibling_cpumask(cpu));
 		cpumask_andnot(*filter_mask, *filter_mask, topology_sibling_cpumask(cpu));
 		core_count++;
@@ -1265,7 +1267,7 @@ static int irq_setup(int *irqs, int nvec)
 {
 	cpumask_var_t filter_mask;
 	cpumask_var_t *filter_mask_list;
-	unsigned int cpu_first, cpu, irq_start, cores;
+	unsigned int cpu_first, cpu, irq_start, cores = 0;
 	int i, core_count = 0, numa_node, cpu_count = 0, err = 0;
 
 	BUG_ON(!alloc_cpumask_var(&filter_mask, GFP_KERNEL));
