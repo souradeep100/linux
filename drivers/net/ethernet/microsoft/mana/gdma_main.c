@@ -1247,7 +1247,7 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 {
 	unsigned int *core_id_list;
 	cpumask_var_t filter_mask, avail_cpus;
-	int i, core_count = 0, cpu_count = 0, err = 0;
+	int i, core_count = 0, cpu_count = 0, err = 0, node_count = 0;
 	unsigned int cpu_first, cpu, irq_start, cores = 0, numa_node = start_numa_node;
 
 	if(!alloc_cpumask_var(&filter_mask, GFP_KERNEL)
@@ -1295,6 +1295,17 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 	 * move to different numa node and continue the same.
 	 */
 	for (i = irq_start; i < nvec; ) {
+
+		/* check if the numa node has cpu or not
+		 * to avoid infinite loop.
+		 */
+		if (cpumask_empty(cpumask_of_node(numa_node))) {
+			numa_node++;
+			if(++node_count == num_online_nodes()) {
+				err = -EAGAIN;
+				goto free_irq;
+			}
+		}
 		cpu_first = cpumask_first_and(avail_cpus,
 					     topology_sibling_cpumask(core_id_list[core_count]));
 		if (cpu_first < nr_cpu_ids && cpu_to_node(cpu_first) == numa_node) {
@@ -1308,14 +1319,16 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 			 */
 			if (cpu_count == nr_cpus_node(numa_node)) {
 				numa_node = numa_node + 1;
+				if (numa_node == num_online_nodes())
+					numa_node = 0;
 
 				/* wrap around once numa nodes
 				 * are traversed.
 				 */
-				if (numa_node == num_online_nodes())
-					numa_node = 0;
-				if (numa_node == start_numa_node)
+				if (numa_node == start_numa_node) {
+					node_count = 0;
 					cpumask_copy(avail_cpus, cpu_online_mask);
+				}
 				cpu_count = 0;
 				core_count = 0;
 				continue;
