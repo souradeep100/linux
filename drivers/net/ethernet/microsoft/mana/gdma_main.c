@@ -1267,8 +1267,9 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 	cpumask_copy(filter_mask, cpu_online_mask);
 	/* initialize core_id_list array */
 	for_each_cpu(cpu, filter_mask) {
-		core_id_list[0] = cpu;
+		core_id_list[core_count] = cpu;
 		cpumask_andnot(filter_mask, filter_mask, topology_sibling_cpumask(cpu));
+		core_count++;
 	}
 
 	/* if number of cpus are equal to max_queues per port, then
@@ -1301,7 +1302,7 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 		 */
 		if (cpumask_empty(cpumask_of_node(numa_node))) {
 			numa_node++;
-			if(++node_count == num_online_nodes()) {
+			if (++node_count == num_online_nodes()) {
 				err = -EAGAIN;
 				goto free_irq;
 			}
