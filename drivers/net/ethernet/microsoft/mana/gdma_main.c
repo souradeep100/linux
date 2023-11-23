@@ -1243,35 +1243,52 @@ void mana_gd_free_res_map(struct gdma_resource *r)
 	r->size = 0;
 }
 
+static int get_next_online_node_with_cpu(int node)
+{
+#if MAX_NUMNODES > 1
+	int next_node = next_online_node(node);
+	for( ; next_node < MAX_NUMNODES; next_node = next_online_node(next_node))
+		if (nr_cpus_node(next_node))
+			return next_node;
+#endif
+	return node;
+}
+	
 static int irq_setup(int *irqs, int nvec, int start_numa_node)
 {
 	unsigned int *core_id_list;
-	cpumask_var_t filter_mask, avail_cpus;
-	int i, core_count = 0, cpu_count = 0, err = 0, node_count = 0;
+	cpumask_var_t avail_cpus;
+	int i, core_count = 0, cpu_count = 0, err = 0;
 	unsigned int cpu_first, cpu, irq_start, cores = 0, numa_node = start_numa_node;
 
-	if(!alloc_cpumask_var(&filter_mask, GFP_KERNEL)
-			     || !alloc_cpumask_var(&avail_cpus, GFP_KERNEL)) {
+	if (!nr_cpus_node(start_numa_node))
+		return -ENODEV;
+
+	if(!alloc_cpumask_var(&avail_cpus, GFP_KERNEL)) {
 		err = -ENOMEM;
 		goto free_irq;
 	}
-	cpumask_copy(filter_mask, cpu_online_mask);
 	cpumask_copy(avail_cpus, cpu_online_mask);
 	/* count the number of cores
 	 */
-	for_each_cpu(cpu, filter_mask) {
-		cpumask_andnot(filter_mask, filter_mask, topology_sibling_cpumask(cpu));
+	for_each_cpu(cpu, avail_cpus) {
+		cpumask_andnot(avail_cpus, avail_cpus, topology_sibling_cpumask(cpu));
 		cores++;
 	}
 	core_id_list = kcalloc(cores, sizeof(unsigned int), GFP_KERNEL);
-	cpumask_copy(filter_mask, cpu_online_mask);
+	if (!core_id_list) {
+		err = -ENOMEM;
+		goto free_irq;
+	}
+	cpumask_copy(avail_cpus, cpu_online_mask);
 	/* initialize core_id_list array */
-	for_each_cpu(cpu, filter_mask) {
+	for_each_cpu(cpu, avail_cpus) {
 		core_id_list[core_count] = cpu;
-		cpumask_andnot(filter_mask, filter_mask, topology_sibling_cpumask(cpu));
+		cpumask_andnot(avail_cpus, avail_cpus, topology_sibling_cpumask(cpu));
 		core_count++;
 	}
 
+	cpumask_copy(avail_cpus, cpu_online_mask);
 	/* if number of cpus are equal to max_queues per port, then
 	 * one extra interrupt for the hardware channel communication.
 	 */
@@ -1300,26 +1317,19 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 		/* check if the numa node has cpu or not
 		 * to avoid infinite loop.
 		 */
-		if (cpumask_empty(cpumask_of_node(numa_node))) {
-			numa_node++;
-			if (++node_count == num_online_nodes()) {
-				err = -EAGAIN;
-				goto free_irq;
-			}
-		}
 		cpu_first = cpumask_first_and(avail_cpus,
 					     topology_sibling_cpumask(core_id_list[core_count]));
 		if (cpu_first < nr_cpu_ids && cpu_to_node(cpu_first) == numa_node) {
 			irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu_first));
 			cpumask_clear_cpu(cpu_first, avail_cpus);
-			cpu_count = cpu_count + 1;
-			i = i + 1;
+			cpu_count++;
+			i++;
 
 			/* checking if all the cpus are used from the
 			 * particular node.
 			 */
 			if (cpu_count == nr_cpus_node(numa_node)) {
-				numa_node = numa_node + 1;
+				numa_node = get_next_online_node_with_cpu(numa_node);
 				if (numa_node == num_online_nodes())
 					numa_node = 0;
 
@@ -1327,7 +1337,6 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 				 * are traversed.
 				 */
 				if (numa_node == start_numa_node) {
-					node_count = 0;
 					cpumask_copy(avail_cpus, cpu_online_mask);
 				}
 				cpu_count = 0;
@@ -1338,11 +1347,10 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 		if (++core_count == cores)
 			core_count = 0;
 	}
-free_irq:
-	free_cpumask_var(filter_mask);
-	free_cpumask_var(avail_cpus);
 	if (core_id_list)
 		kfree(core_id_list);
+free_irq:
+	free_cpumask_var(avail_cpus);
 	return err;
 }
 
