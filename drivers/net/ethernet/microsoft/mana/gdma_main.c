@@ -1249,16 +1249,14 @@ static int get_node_with_cpu(int node, int *cpu_count)
 	int node_cpu_count = nr_cpus_node(node);
 
 #if MAX_NUMNODES > 1
-	if (!node_cpu_count || *cpu_count < node_cpu_count) {
+	if (!node_cpu_count || *cpu_count == node_cpu_count) {
 		next_node = next_online_node(next_node);
-		pr_err("next node is %d\n", next_node);
-		while(next_node < MAX_NUMNODES) {
+		while(next_node <= MAX_NUMNODES) {		
+			if (next_node == MAX_NUMNODES)
+				next_node = first_online_node;
 			if (nr_cpus_node(next_node))
 				break;
 			next_node = next_online_node(next_node);
-			pr_err("the next node %d\n", next_node);
-			if (next_node == MAX_NUMNODES)
-				next_node = first_online_node;
 		}
 		*cpu_count = 0;
 	}
@@ -1271,10 +1269,10 @@ static int get_node_with_cpu(int node, int *cpu_count)
 	
 static int irq_setup(int *irqs, int nvec, int start_numa_node)
 {
-	unsigned int *core_id_list;
+	int *core_id_list;
 	cpumask_var_t avail_cpus;
-	int i, core_count = 0, cpu_count = 0, err = 0;
-	unsigned int cpu_first, cpu, irq_start, cores = 0, numa_node = start_numa_node, real_start_node;
+	int i, cpu, cpu_first, core_count = 0, cpu_count = 0, err = 0;
+	int irq_start, cores = 0, numa_node = start_numa_node, real_start_node;
 
 	if (!nr_cpus_node(start_numa_node))
 		return -ENODEV;
@@ -1338,26 +1336,25 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 					     topology_sibling_cpumask(core_id_list[core_count]));
 		if (cpu_first < nr_cpu_ids && cpu_to_node(cpu_first) == numa_node) {
 			irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu_first));
-			pr_err("irq_setup irq %d and cpu %d numa %d\n", irqs[i], cpu_first, numa_node);
 			cpumask_clear_cpu(cpu_first, avail_cpus);
 			cpu_count++;
 			i++;
-
-			/* checking if all the cpus are used from the
-			 * particular node.
+			/* Get the new numa node based on cpu_count 
 			 */
 			numa_node = get_node_with_cpu(numa_node, &cpu_count);
-
-			/* wrap around once numa nodes
-			 * are traversed.
-			 */
 			if (numa_node == NUMA_NO_NODE) {
 				err = -ENODEV;
 				goto free_core_id_list;
 			}
+			/* wrap over if the numa_node is the starting node
+			 */
 			if (numa_node == real_start_node) {
 				cpumask_copy(avail_cpus, cpu_online_mask);
 			}
+
+			/* change of numa node, changes cpu_count to 0, change the core count
+			 * to 0 based on that.
+			 */
 			if (!cpu_count) {
 				core_count = 0;
 				continue;
