@@ -1248,6 +1248,7 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 	int i = 0, cpu, err = 0;
 	const struct cpumask *node_cpumask;
 	unsigned int  next_node = start_numa_node;
+	const struct cpumask *prev = cpu_none_mask;
 	cpumask_var_t visited_cpus, node_cpumask_temp;
 
 	if (!zalloc_cpumask_var(&visited_cpus, GFP_KERNEL)) {
@@ -1260,21 +1261,26 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 	}
 	rcu_read_lock();
 	for_each_numa_hop_mask(node_cpumask, next_node) {
-		cpumask_copy(node_cpumask_temp, node_cpumask);
+		cpumask_andnot(node_cpumask_temp, node_cpumask, prev);
+		pr_err("the next node cpu %d\n",cpumask_first(node_cpumask_temp));
+		cpumask_clear(visited_cpus);
 		for_each_cpu(cpu, node_cpumask_temp) {
 			cpumask_andnot(node_cpumask_temp, node_cpumask_temp,
 				       topology_sibling_cpumask(cpu));
 			irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu));
+			pr_err("irq %d cpu %d\n", irqs[i], cpu);
 			if(++i == nvec)
 				goto free_mask;
 			cpumask_set_cpu(cpu, visited_cpus);
-			if (cpumask_empty(node_cpumask_temp)) {
+			if (cpumask_empty(node_cpumask_temp) && !cpumask_equal(node_cpumask,
+			    visited_cpus)) {
 				cpumask_copy(node_cpumask_temp, node_cpumask);
 				cpumask_andnot(node_cpumask_temp, node_cpumask_temp,
 					       visited_cpus);
 				cpu = 0;
 			}
 		}
+		prev = node_cpumask;
 	}
 free_mask:
 	rcu_read_unlock();
