@@ -1291,9 +1291,9 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	unsigned int max_queues_per_port;
 	struct gdma_irq_context *gic;
 	unsigned int max_irqs, cpu;
+	int start_irq_index = 1;
 	int nvec, *irqs, irq;
 	int err, i = 0, j;
-	int start_irq_index = 1;
 
 	cpus_read_lock();
 	max_queues_per_port = num_online_cpus();
@@ -1306,7 +1306,7 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	nvec = pci_alloc_irq_vectors(pdev, 2, max_irqs, PCI_IRQ_MSIX);
 	if (nvec < 0)
 		return nvec;
-	if (nvec < max_queues_per_port)
+	if (nvec <= num_online_cpus)
 		start_irq_index = 0;
 	irqs = kmalloc_array((nvec - start_irq_index) , sizeof(int), GFP_KERNEL);
 	if (!irqs) {
@@ -1341,6 +1341,17 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 
 		if (!i) {
 			err = request_irq(irq, mana_gd_intr, 0, gic->name, gic);
+			if (err)
+				goto free_irq;
+			/*
+			 * If number of IRQ is one extra than number of online CPUs,
+			 * then we need to assign IRQ0 (hwc irq) and IRQ1 to
+			 * same CPU.
+			 * Else we will use different CPUs for IRQ0 and IRQ1.
+			 * Also we are using cpumask_local_spread instead of 
+			 * cpumask_first for the node, because the node can be 
+			 * mem only.
+			 */
 			if (start_irq_index) {
 				cpu = cpumask_local_spread(i, gc->numa_node);
 				irq_set_affinity_and_hint(irq, cpumask_of(cpu));
@@ -1351,9 +1362,9 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 			irqs[i - start_irq_index] = irq;
 			err = request_irq(irqs[i - start_irq_index], mana_gd_intr, 0,
 					  gic->name, gic);
+			if (err)
+				goto free_irq;
 		}
-		if (err)
-			goto free_irq;
 	}
 
 	err = irq_setup(irqs, (nvec - start_irq_index), gc->numa_node);
