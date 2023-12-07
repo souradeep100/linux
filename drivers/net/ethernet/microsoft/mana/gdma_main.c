@@ -1258,15 +1258,14 @@ static int irq_setup(int *irqs, int nvec, int start_numa_node)
 		err = -ENOMEM;
 		return err;
 	}
+
 	rcu_read_lock();
 	for_each_numa_hop_mask(node_cpumask, next_node) {
 		cpumask_andnot(node_cpumask_temp, node_cpumask, visited_cpus);
-		pr_err("the next node cpu %d\n",cpumask_first(node_cpumask_temp));
 		for_each_cpu(cpu, node_cpumask_temp) {
 			cpumask_andnot(node_cpumask_temp, node_cpumask_temp,
 				       topology_sibling_cpumask(cpu));
 			irq_set_affinity_and_hint(irqs[i], cpumask_of(cpu));
-			pr_err("irq %d cpu %d\n", irqs[i], cpu);
 			if(++i == nvec)
 				goto free_mask;
 			cpumask_set_cpu(cpu, visited_cpus);
@@ -1306,8 +1305,9 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 	nvec = pci_alloc_irq_vectors(pdev, 2, max_irqs, PCI_IRQ_MSIX);
 	if (nvec < 0)
 		return nvec;
-	if (nvec <= num_online_cpus)
+	if (nvec <= num_online_cpus())
 		start_irq_index = 0;
+
 	irqs = kmalloc_array((nvec - start_irq_index) , sizeof(int), GFP_KERNEL);
 	if (!irqs) {
 		err = -ENOMEM;
@@ -1348,8 +1348,8 @@ static int mana_gd_setup_irqs(struct pci_dev *pdev)
 			 * then we need to assign IRQ0 (hwc irq) and IRQ1 to
 			 * same CPU.
 			 * Else we will use different CPUs for IRQ0 and IRQ1.
-			 * Also we are using cpumask_local_spread instead of 
-			 * cpumask_first for the node, because the node can be 
+			 * Also we are using cpumask_local_spread instead of
+			 * cpumask_first for the node, because the node can be
 			 * mem only.
 			 */
 			if (start_irq_index) {
