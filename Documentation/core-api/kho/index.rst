@@ -83,18 +83,6 @@ Public API
 .. kernel-doc:: kernel/liveupdate/kexec_handover.c
   :export:
 
-Kexec Handover Radix Tree
-=========================
-
-.. kernel-doc:: include/linux/kho_radix_tree.h
-  :doc: Kexec Handover Radix Tree
-
-Public API
-==========
-
-.. kernel-doc:: kernel/liveupdate/kexec_handover.c
-  :export:
-
 See Also
 ========
 
