@@ -24,19 +24,18 @@ struct fdt_debugfs {
 	struct dentry *file;
 };
 
-static int __kho_debugfs_blob_add(struct list_head *list, struct dentry *dir,
-				  const char *name, const void *blob,
-				  size_t size)
+static int __kho_debugfs_fdt_add(struct list_head *list, struct dentry *dir,
+				 const char *name, const void *fdt)
 {
 	struct fdt_debugfs *f;
 	struct dentry *file;
 
-	f = kmalloc_obj(*f);
+	f = kmalloc(sizeof(*f), GFP_KERNEL);
 	if (!f)
 		return -ENOMEM;
 
-	f->wrapper.data = (void *)blob;
-	f->wrapper.size = size;
+	f->wrapper.data = (void *)fdt;
+	f->wrapper.size = fdt_totalsize(fdt);
 
 	file = debugfs_create_blob(name, 0400, dir, &f->wrapper);
 	if (IS_ERR(file)) {
@@ -50,8 +49,8 @@ static int __kho_debugfs_blob_add(struct list_head *list, struct dentry *dir,
 	return 0;
 }
 
-int kho_debugfs_blob_add(struct kho_debugfs *dbg, const char *name,
-			 const void *blob, size_t size, bool root)
+int kho_debugfs_fdt_add(struct kho_debugfs *dbg, const char *name,
+			const void *fdt, bool root)
 {
 	struct dentry *dir;
 
@@ -60,15 +59,15 @@ int kho_debugfs_blob_add(struct kho_debugfs *dbg, const char *name,
 	else
 		dir = dbg->sub_fdt_dir;
 
-	return __kho_debugfs_blob_add(&dbg->fdt_list, dir, name, blob, size);
+	return __kho_debugfs_fdt_add(&dbg->fdt_list, dir, name, fdt);
 }
 
-void kho_debugfs_blob_remove(struct kho_debugfs *dbg, void *blob)
+void kho_debugfs_fdt_remove(struct kho_debugfs *dbg, void *fdt)
 {
 	struct fdt_debugfs *ff;
 
 	list_for_each_entry(ff, &dbg->fdt_list, list) {
-		if (ff->wrapper.data == blob) {
+		if (ff->wrapper.data == fdt) {
 			debugfs_remove(ff->file);
 			list_del(&ff->list);
 			kfree(ff);
@@ -76,6 +75,24 @@ void kho_debugfs_blob_remove(struct kho_debugfs *dbg, void *blob)
 		}
 	}
 }
+
+static int kho_out_finalize_get(void *data, u64 *val)
+{
+	*val = kho_finalized();
+
+	return 0;
+}
+
+static int kho_out_finalize_set(void *data, u64 val)
+{
+	if (val)
+		return kho_finalize();
+	else
+		return -EINVAL;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(kho_out_finalize_fops, kho_out_finalize_get,
+			 kho_out_finalize_set, "%llu\n");
 
 static int scratch_phys_show(struct seq_file *m, void *v)
 {
@@ -114,42 +131,28 @@ __init void kho_in_debugfs_init(struct kho_debugfs *dbg, const void *fdt)
 		goto err_rmdir;
 	}
 
-	err = __kho_debugfs_blob_add(&dbg->fdt_list, dir, "fdt", fdt,
-				     fdt_totalsize(fdt));
+	err = __kho_debugfs_fdt_add(&dbg->fdt_list, dir, "fdt", fdt);
 	if (err)
 		goto err_rmdir;
 
 	fdt_for_each_subnode(child, fdt, 0) {
 		int len = 0;
 		const char *name = fdt_get_name(fdt, child, NULL);
-		const u64 *blob_phys;
-		const u64 *blob_size;
-		void *blob;
+		const u64 *fdt_phys;
 
-		blob_phys = fdt_getprop(fdt, child,
-					KHO_SUB_TREE_PROP_NAME, &len);
-		if (!blob_phys)
+		fdt_phys = fdt_getprop(fdt, child, KHO_FDT_SUB_TREE_PROP_NAME, &len);
+		if (!fdt_phys)
 			continue;
-		if (len != sizeof(*blob_phys)) {
-			pr_warn("node %s prop %s has invalid length: %d\n",
-				name, KHO_SUB_TREE_PROP_NAME, len);
+		if (len != sizeof(*fdt_phys)) {
+			pr_warn("node %s prop fdt has invalid length: %d\n",
+				name, len);
 			continue;
 		}
-
-		blob_size = fdt_getprop(fdt, child,
-					KHO_SUB_TREE_SIZE_PROP_NAME, &len);
-		if (!blob_size || len != sizeof(*blob_size)) {
-			pr_warn("node %s missing or invalid %s property\n",
-				name, KHO_SUB_TREE_SIZE_PROP_NAME);
-			continue;
-		}
-
-		blob = phys_to_virt(*blob_phys);
-		err = __kho_debugfs_blob_add(&dbg->fdt_list, sub_fdt_dir, name,
-					     blob, *blob_size);
+		err = __kho_debugfs_fdt_add(&dbg->fdt_list, sub_fdt_dir, name,
+					    phys_to_virt(*fdt_phys));
 		if (err) {
-			pr_warn("failed to add blob %s to debugfs: %pe\n",
-				name, ERR_PTR(err));
+			pr_warn("failed to add fdt %s to debugfs: %pe\n", name,
+				ERR_PTR(err));
 			continue;
 		}
 	}
@@ -193,6 +196,11 @@ __init int kho_out_debugfs_init(struct kho_debugfs *dbg)
 
 	f = debugfs_create_file("scratch_len", 0400, dir, NULL,
 				&scratch_len_fops);
+	if (IS_ERR(f))
+		goto err_rmdir;
+
+	f = debugfs_create_file("finalize", 0600, dir, NULL,
+				&kho_out_finalize_fops);
 	if (IS_ERR(f))
 		goto err_rmdir;
 

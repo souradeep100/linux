@@ -14,13 +14,10 @@
 #include <linux/cma.h>
 #include <linux/kmemleak.h>
 #include <linux/count_zeros.h>
-#include <linux/kasan.h>
 #include <linux/kexec.h>
 #include <linux/kexec_handover.h>
 #include <linux/kho_radix_tree.h>
-#include <linux/utsname.h>
 #include <linux/kho/abi/kexec_handover.h>
-#include <linux/kho/abi/kexec_metadata.h>
 #include <linux/libfdt.h>
 #include <linux/list.h>
 #include <linux/memblock.h>
@@ -71,7 +68,8 @@ early_param("kho", kho_parse_enable);
 
 struct kho_out {
 	void *fdt;
-	struct mutex lock; /* protects KHO FDT */
+	bool finalized;
+	struct mutex lock; /* protects KHO FDT finalization */
 
 	struct kho_radix_tree radix_tree;
 	struct kho_debugfs dbg;
@@ -82,6 +80,7 @@ static struct kho_out kho_out = {
 	.radix_tree = {
 		.lock = __MUTEX_INITIALIZER(kho_out.radix_tree.lock),
 	},
+	.finalized = false,
 };
 
 /**
@@ -371,6 +370,7 @@ static void __kho_unpreserve(struct kho_radix_tree *tree,
 	}
 }
 
+
 /* For physically contiguous 0-order pages. */
 static void kho_init_pages(struct page *page, unsigned long nr_pages)
 {
@@ -413,7 +413,7 @@ static struct page *kho_restore_page(phys_addr_t phys, bool is_folio)
 	 * check also implicitly makes sure phys is order-aligned since for
 	 * non-order-aligned phys addresses, magic will never be set.
 	 */
-	if (WARN_ON_ONCE(info.magic != KHO_PAGE_MAGIC))
+	if (WARN_ON_ONCE(info.magic != KHO_PAGE_MAGIC || info.order > MAX_PAGE_ORDER))
 		return NULL;
 	nr_pages = (1 << info.order);
 
@@ -726,13 +726,12 @@ err_disable_kho:
 }
 
 /**
- * kho_add_subtree - record the physical address of a sub blob in KHO root tree.
+ * kho_add_subtree - record the physical address of a sub FDT in KHO root tree.
  * @name: name of the sub tree.
- * @blob: the sub tree blob.
- * @size: size of the blob in bytes.
+ * @fdt: the sub tree blob.
  *
  * Creates a new child node named @name in KHO root FDT and records
- * the physical address of @blob. The pages of @blob must also be preserved
+ * the physical address of @fdt. The pages of @fdt must also be preserved
  * by KHO for the new kernel to retrieve it after kexec.
  *
  * A debugfs blob entry is also created at
@@ -741,11 +740,10 @@ err_disable_kho:
  *
  * Return: 0 on success, error code on failure
  */
-int kho_add_subtree(const char *name, void *blob, size_t size)
+int kho_add_subtree(const char *name, void *fdt)
 {
-	phys_addr_t phys = virt_to_phys(blob);
+	phys_addr_t phys = virt_to_phys(fdt);
 	void *root_fdt = kho_out.fdt;
-	u64 size_u64 = size;
 	int err = -ENOMEM;
 	int off, fdt_err;
 
@@ -762,18 +760,12 @@ int kho_add_subtree(const char *name, void *blob, size_t size)
 		goto out_pack;
 	}
 
-	err = fdt_setprop(root_fdt, off, KHO_SUB_TREE_PROP_NAME,
+	err = fdt_setprop(root_fdt, off, KHO_FDT_SUB_TREE_PROP_NAME,
 			  &phys, sizeof(phys));
 	if (err < 0)
 		goto out_pack;
 
-	err = fdt_setprop(root_fdt, off, KHO_SUB_TREE_SIZE_PROP_NAME,
-			  &size_u64, sizeof(size_u64));
-	if (err < 0)
-		goto out_pack;
-
-	WARN_ON_ONCE(kho_debugfs_blob_add(&kho_out.dbg, name, blob,
-					  size, false));
+	WARN_ON_ONCE(kho_debugfs_fdt_add(&kho_out.dbg, name, fdt, false));
 
 out_pack:
 	fdt_pack(root_fdt);
@@ -782,9 +774,9 @@ out_pack:
 }
 EXPORT_SYMBOL_GPL(kho_add_subtree);
 
-void kho_remove_subtree(void *blob)
+void kho_remove_subtree(void *fdt)
 {
-	phys_addr_t target_phys = virt_to_phys(blob);
+	phys_addr_t target_phys = virt_to_phys(fdt);
 	void *root_fdt = kho_out.fdt;
 	int off;
 	int err;
@@ -800,13 +792,13 @@ void kho_remove_subtree(void *blob)
 		const u64 *val;
 		int len;
 
-		val = fdt_getprop(root_fdt, off, KHO_SUB_TREE_PROP_NAME, &len);
+		val = fdt_getprop(root_fdt, off, KHO_FDT_SUB_TREE_PROP_NAME, &len);
 		if (!val || len != sizeof(phys_addr_t))
 			continue;
 
 		if ((phys_addr_t)*val == target_phys) {
 			fdt_del_node(root_fdt, off);
-			kho_debugfs_blob_remove(&kho_out.dbg, blob);
+			kho_debugfs_fdt_remove(&kho_out.dbg, fdt);
 			break;
 		}
 	}
@@ -880,16 +872,8 @@ int kho_preserve_pages(struct page *page, unsigned long nr_pages)
 	}
 
 	while (pfn < end_pfn) {
-		unsigned int order =
+		const unsigned int order =
 			min(count_trailing_zeros(pfn), ilog2(end_pfn - pfn));
-
-		/*
-		 * Make sure all the pages in a single preservation are in the
-		 * same NUMA node. The restore machinery can not cope with a
-		 * preservation spanning multiple NUMA nodes.
-		 */
-		while (pfn_to_nid(pfn) != pfn_to_nid(pfn + (1UL << order) - 1))
-			order--;
 
 		err = kho_radix_add_page(tree, pfn, order);
 		if (err) {
@@ -1096,7 +1080,6 @@ EXPORT_SYMBOL_GPL(kho_unpreserve_vmalloc);
 void *kho_restore_vmalloc(const struct kho_vmalloc *preservation)
 {
 	struct kho_vmalloc_chunk *chunk = KHOSER_LOAD_PTR(preservation->first);
-	kasan_vmalloc_flags_t kasan_flags = KASAN_VMALLOC_PROT_NORMAL;
 	unsigned int align, order, shift, vm_flags;
 	unsigned long total_pages, contig_pages;
 	unsigned long addr, size;
@@ -1110,7 +1093,7 @@ void *kho_restore_vmalloc(const struct kho_vmalloc *preservation)
 		return NULL;
 
 	total_pages = preservation->total_pages;
-	pages = kvmalloc_objs(*pages, total_pages);
+	pages = kvmalloc_array(total_pages, sizeof(*pages), GFP_KERNEL);
 	if (!pages)
 		return NULL;
 	order = preservation->order;
@@ -1148,8 +1131,7 @@ void *kho_restore_vmalloc(const struct kho_vmalloc *preservation)
 		goto err_free_pages_array;
 
 	area = __get_vm_area_node(total_pages * PAGE_SIZE, align, shift,
-				  vm_flags | VM_UNINITIALIZED,
-				  VMALLOC_START, VMALLOC_END,
+				  vm_flags, VMALLOC_START, VMALLOC_END,
 				  NUMA_NO_NODE, GFP_KERNEL,
 				  __builtin_return_address(0));
 	if (!area)
@@ -1163,13 +1145,6 @@ void *kho_restore_vmalloc(const struct kho_vmalloc *preservation)
 
 	area->nr_pages = total_pages;
 	area->pages = pages;
-
-	if (vm_flags & VM_ALLOC)
-		kasan_flags |= KASAN_VMALLOC_VM_ALLOC;
-
-	area->addr = kasan_unpoison_vmalloc(area->addr, total_pages * PAGE_SIZE,
-					    kasan_flags);
-	clear_vm_uninitialized_flag(area);
 
 	return area->addr;
 
@@ -1267,11 +1242,26 @@ void kho_restore_free(void *mem)
 }
 EXPORT_SYMBOL_GPL(kho_restore_free);
 
+int kho_finalize(void)
+{
+	if (!kho_enable)
+		return -EOPNOTSUPP;
+
+	guard(mutex)(&kho_out.lock);
+	kho_out.finalized = true;
+
+	return 0;
+}
+
+bool kho_finalized(void)
+{
+	guard(mutex)(&kho_out.lock);
+	return kho_out.finalized;
+}
+
 struct kho_in {
 	phys_addr_t fdt_phys;
 	phys_addr_t scratch_phys;
-	char previous_release[__NEW_UTS_LEN + 1];
-	u32 kexec_count;
 	struct kho_debugfs dbg;
 };
 
@@ -1304,17 +1294,16 @@ bool is_kho_boot(void)
 EXPORT_SYMBOL_GPL(is_kho_boot);
 
 /**
- * kho_retrieve_subtree - retrieve a preserved sub blob by its name.
- * @name: the name of the sub blob passed to kho_add_subtree().
- * @phys: if found, the physical address of the sub blob is stored in @phys.
- * @size: if not NULL and found, the size of the sub blob is stored in @size.
+ * kho_retrieve_subtree - retrieve a preserved sub FDT by its name.
+ * @name: the name of the sub FDT passed to kho_add_subtree().
+ * @phys: if found, the physical address of the sub FDT is stored in @phys.
  *
- * Retrieve a preserved sub blob named @name and store its physical
- * address in @phys and optionally its size in @size.
+ * Retrieve a preserved sub FDT named @name and store its physical
+ * address in @phys.
  *
  * Return: 0 on success, error code on failure
  */
-int kho_retrieve_subtree(const char *name, phys_addr_t *phys, size_t *size)
+int kho_retrieve_subtree(const char *name, phys_addr_t *phys)
 {
 	const void *fdt = kho_get_fdt();
 	const u64 *val;
@@ -1330,21 +1319,11 @@ int kho_retrieve_subtree(const char *name, phys_addr_t *phys, size_t *size)
 	if (offset < 0)
 		return -ENOENT;
 
-	val = fdt_getprop(fdt, offset, KHO_SUB_TREE_PROP_NAME, &len);
+	val = fdt_getprop(fdt, offset, KHO_FDT_SUB_TREE_PROP_NAME, &len);
 	if (!val || len != sizeof(*val))
 		return -EINVAL;
 
 	*phys = (phys_addr_t)*val;
-
-	val = fdt_getprop(fdt, offset, KHO_SUB_TREE_SIZE_PROP_NAME, &len);
-	if (!val || len != sizeof(*val)) {
-		pr_warn("broken KHO subnode '%s': missing or invalid blob-size property\n",
-			name);
-		return -EINVAL;
-	}
-
-	if (size)
-		*size = (size_t)*val;
 
 	return 0;
 }
@@ -1396,96 +1375,6 @@ static __init int kho_out_fdt_setup(void)
 	return err;
 }
 
-static void __init kho_in_kexec_metadata(void)
-{
-	struct kho_kexec_metadata *metadata;
-	phys_addr_t metadata_phys;
-	size_t blob_size;
-	int err;
-
-	err = kho_retrieve_subtree(KHO_METADATA_NODE_NAME, &metadata_phys,
-				   &blob_size);
-	if (err)
-		/* This is fine, previous kernel didn't export metadata */
-		return;
-
-	/* Check that, at least, "version" is present */
-	if (blob_size < sizeof(u32)) {
-		pr_warn("kexec-metadata blob too small (%zu bytes)\n",
-			blob_size);
-		return;
-	}
-
-	metadata = phys_to_virt(metadata_phys);
-
-	if (metadata->version != KHO_KEXEC_METADATA_VERSION) {
-		pr_warn("kexec-metadata version %u not supported (expected %u)\n",
-			metadata->version, KHO_KEXEC_METADATA_VERSION);
-		return;
-	}
-
-	if (blob_size < sizeof(*metadata)) {
-		pr_warn("kexec-metadata blob too small for v%u (%zu < %zu)\n",
-			metadata->version, blob_size, sizeof(*metadata));
-		return;
-	}
-
-	/*
-	 * Copy data to the kernel structure that will persist during
-	 * kernel lifetime.
-	 */
-	kho_in.kexec_count = metadata->kexec_count;
-	strscpy(kho_in.previous_release, metadata->previous_release,
-		sizeof(kho_in.previous_release));
-
-	pr_info("exec from: %s (count %u)\n",
-		kho_in.previous_release, kho_in.kexec_count);
-}
-
-/*
- * Create kexec metadata to pass kernel version and boot count to the
- * next kernel. This keeps the core KHO ABI minimal and allows the
- * metadata format to evolve independently.
- */
-static __init int kho_out_kexec_metadata(void)
-{
-	struct kho_kexec_metadata *metadata;
-	int err;
-
-	metadata = kho_alloc_preserve(sizeof(*metadata));
-	if (IS_ERR(metadata))
-		return PTR_ERR(metadata);
-
-	metadata->version = KHO_KEXEC_METADATA_VERSION;
-	strscpy(metadata->previous_release, init_uts_ns.name.release,
-		sizeof(metadata->previous_release));
-	/* kho_in.kexec_count is set to 0 on cold boot */
-	metadata->kexec_count = kho_in.kexec_count + 1;
-
-	err = kho_add_subtree(KHO_METADATA_NODE_NAME, metadata,
-			      sizeof(*metadata));
-	if (err)
-		kho_unpreserve_free(metadata);
-
-	return err;
-}
-
-static int __init kho_kexec_metadata_init(const void *fdt)
-{
-	int err;
-
-	if (fdt)
-		kho_in_kexec_metadata();
-
-	/* Populate kexec metadata for the possible next kexec */
-	err = kho_out_kexec_metadata();
-	if (err)
-		pr_warn("failed to initialize kexec-metadata subtree: %d\n",
-			err);
-
-	return err;
-}
-
 static __init int kho_init(void)
 {
 	struct kho_radix_tree *tree = &kho_out.radix_tree;
@@ -1519,10 +1408,6 @@ static __init int kho_init(void)
 	if (err)
 		goto err_free_fdt;
 
-	err = kho_kexec_metadata_init(fdt);
-	if (err)
-		goto err_free_fdt;
-
 	if (fdt) {
 		kho_in_debugfs_init(&kho_in.dbg, fdt);
 		return 0;
@@ -1547,9 +1432,8 @@ static __init int kho_init(void)
 			init_cma_reserved_pageblock(pfn_to_page(pfn));
 	}
 
-	WARN_ON_ONCE(kho_debugfs_blob_add(&kho_out.dbg, "fdt",
-					  kho_out.fdt,
-					  fdt_totalsize(kho_out.fdt), true));
+	WARN_ON_ONCE(kho_debugfs_fdt_add(&kho_out.dbg, "fdt",
+					 kho_out.fdt, true));
 
 	return 0;
 
