@@ -35,6 +35,18 @@ struct kho_radix_tree {
 	bool frozen;
 };
 
+/**
+ * struct kho_radix_crash_tree - Read-only radix tree for crash kernel use.
+ *
+ * In the crash kernel, the old kernel's memory is not in the direct map.
+ * This variant uses memremap() during init to map the tree nodes and
+ * converts the physical address table entries to virtual addresses in-place,
+ * enabling efficient pointer-based traversal without per-lookup remapping.
+ */
+struct kho_radix_crash_tree {
+	struct kho_radix_node *root;
+};
+
 typedef int (*kho_radix_tree_walk_callback_t)(phys_addr_t phys,
 					      unsigned int order);
 
@@ -52,6 +64,11 @@ int kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
 int kho_radix_walk_tree(struct kho_radix_tree *tree,
 			kho_radix_tree_walk_callback_t cb_data,
 			kho_radix_tree_walk_callback_t cb_meta);
+
+int kho_radix_crash_init(struct kho_radix_crash_tree *tree, phys_addr_t root_pa);
+
+bool kho_radix_crash_contains_page(struct kho_radix_crash_tree *tree,
+				   unsigned long pfn, unsigned int order);
 
 #else  /* #ifdef CONFIG_KEXEC_HANDOVER */
 
@@ -85,6 +102,18 @@ static inline int kho_radix_walk_tree(struct kho_radix_tree *tree,
 	return -EOPNOTSUPP;
 }
 
+static inline int kho_radix_crash_init(struct kho_radix_crash_tree *tree,
+				       phys_addr_t root_pa)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline bool kho_radix_crash_contains_page(
+					struct kho_radix_crash_tree *tree,
+					unsigned long pfn, unsigned int order)
+{
+	return false;
+}
 #endif /* #ifdef CONFIG_KEXEC_HANDOVER */
 
 #endif	/* _LINUX_KHO_RADIX_TREE_H */
