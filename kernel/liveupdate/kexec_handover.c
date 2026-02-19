@@ -76,9 +76,6 @@ struct kho_out {
 
 static struct kho_out kho_out = {
 	.lock = __MUTEX_INITIALIZER(kho_out.lock),
-	.radix_tree = {
-		.lock = __MUTEX_INITIALIZER(kho_out.radix_tree.lock),
-	},
 };
 
 /**
@@ -141,6 +138,57 @@ static unsigned long kho_radix_get_table_index(unsigned long key,
 }
 
 /**
+ * kho_radix_tree_init - Initialize a KHO radix tree.
+ * @tree: The KHO radix tree to initialize.
+ * @root_pa: Physical address of a preserved root node, or 0 to allocate a
+ *           fresh empty tree.
+ *
+ * Initializes the tree's mutex lock and sets up the root node. If @root_pa
+ * is 0, a new zeroed root page is allocated. Otherwise the given physical
+ * address is mapped as the root, restoring a tree preserved across kexec.
+ *
+ * Return: 0 on success, -ENOMEM on allocation failure.
+ */
+int kho_radix_tree_init(struct kho_radix_tree *tree, phys_addr_t root_pa)
+{
+	mutex_init(&tree->lock);
+	tree->frozen = false;
+
+	if (root_pa) {
+		tree->root = phys_to_virt(root_pa);
+	} else {
+		tree->root = (struct kho_radix_node *)get_zeroed_page(GFP_KERNEL);
+		if (!tree->root)
+			return -ENOMEM;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kho_radix_tree_init);
+
+/**
+ * kho_radix_tree_freeze - Freeze the tree, preventing further modifications.
+ * @tree: The KHO radix tree to freeze.
+ *
+ * After freezing, kho_radix_add_page() and kho_radix_del_page() will return
+ * -EBUSY.  The check is performed under the tree's mutex, so there is no
+ * race between a concurrent add/del and the freeze.
+ *
+ * Return: 0 on success, -EBUSY if the tree is already frozen.
+ */
+int kho_radix_tree_freeze(struct kho_radix_tree *tree)
+{
+	guard(mutex)(&tree->lock);
+
+	if (tree->frozen)
+		return -EBUSY;
+
+	tree->frozen = true;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kho_radix_tree_freeze);
+
+/**
  * kho_radix_add_page - Marks a page as preserved in the radix tree.
  * @tree: The KHO radix tree.
  * @pfn: The page frame number of the page to preserve.
@@ -172,6 +220,9 @@ int kho_radix_add_page(struct kho_radix_tree *tree,
 	might_sleep();
 
 	guard(mutex)(&tree->lock);
+
+	if (tree->frozen)
+		return -EBUSY;
 
 	/* Go from high levels to low levels */
 	for (i = KHO_TREE_MAX_DEPTH - 1; i > 0; i--) {
@@ -232,9 +283,12 @@ EXPORT_SYMBOL_GPL(kho_radix_add_page);
  * This function traverses the radix tree and clears the bit corresponding to
  * the page, effectively removing its "preserved" status. It does not free
  * the tree's intermediate nodes, even if they become empty.
+ *
+ * Return: 0 on success, -EINVAL if the tree is uninitialized, -EBUSY if
+ *         frozen, -ENOENT if the page was not preserved.
  */
-void kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
-			unsigned int order)
+int kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
+		       unsigned int order)
 {
 	unsigned long key = kho_radix_encode_key(PFN_PHYS(pfn), order);
 	struct kho_radix_node *node = tree->root;
@@ -242,11 +296,14 @@ void kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
 	unsigned int i, idx;
 
 	if (WARN_ON_ONCE(!tree->root))
-		return;
+		return -EINVAL;
 
 	might_sleep();
 
 	guard(mutex)(&tree->lock);
+
+	if (WARN_ON_ONCE(tree->frozen))
+		return -EBUSY;
 
 	/* Go from high levels to low levels */
 	for (i = KHO_TREE_MAX_DEPTH - 1; i > 0; i--) {
@@ -257,7 +314,7 @@ void kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
 		 * return with a warning.
 		 */
 		if (WARN_ON(!node->table[idx]))
-			return;
+			return -ENOENT;
 
 		node = phys_to_virt(node->table[idx]);
 	}
@@ -266,6 +323,8 @@ void kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
 	leaf = (struct kho_radix_leaf *)node;
 	idx = kho_radix_get_bitmap_index(key);
 	__clear_bit(idx, leaf->bitmap);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(kho_radix_del_page);
 
@@ -291,7 +350,8 @@ static int kho_radix_walk_leaf(struct kho_radix_leaf *leaf,
 
 static int __kho_radix_walk_tree(struct kho_radix_node *root,
 				 unsigned int level, unsigned long start,
-				 kho_radix_tree_walk_callback_t cb)
+				 kho_radix_tree_walk_callback_t cb_data,
+				 kho_radix_tree_walk_callback_t cb_meta)
 {
 	struct kho_radix_node *node;
 	struct kho_radix_leaf *leaf;
@@ -302,6 +362,10 @@ static int __kho_radix_walk_tree(struct kho_radix_node *root,
 	for (i = 0; i < PAGE_SIZE / sizeof(phys_addr_t); i++) {
 		if (!root->table[i])
 			continue;
+
+		err = cb_meta(root->table[i], 0);
+		if (err)
+			return err;
 
 		shift = ((level - 1) * KHO_TABLE_SIZE_LOG2) +
 			KHO_BITMAP_SIZE_LOG2;
@@ -315,10 +379,10 @@ static int __kho_radix_walk_tree(struct kho_radix_node *root,
 			 * node is pointing to the level 0 bitmap.
 			 */
 			leaf = (struct kho_radix_leaf *)node;
-			err = kho_radix_walk_leaf(leaf, key, cb);
+			err = kho_radix_walk_leaf(leaf, key, cb_data);
 		} else {
 			err  = __kho_radix_walk_tree(node, level - 1,
-						     key, cb);
+						     key, cb_data, cb_meta);
 		}
 
 		if (err)
@@ -331,9 +395,12 @@ static int __kho_radix_walk_tree(struct kho_radix_node *root,
 /**
  * kho_radix_walk_tree - Traverses the radix tree and calls a callback for each preserved page.
  * @tree: A pointer to the KHO radix tree to walk.
- * @cb: A callback function of type kho_radix_tree_walk_callback_t that will be
- *      invoked for each preserved page found in the tree. The callback receives
- *      the physical address and order of the preserved page.
+ * @cb_data: A callback function of type kho_radix_tree_walk_callback_t that
+ *      will be invoked for each preserved page found in the tree. The callback
+ *      receives the physical address and order of the preserved page.
+ * @cb_meta: A callback function of type kho_radix_tree_walk_callback_t that
+ *      will be invoked for each metadata node found in the tree. The callback
+ *      receives the physical address and order of the metadata node.
  *
  * This function walks the radix tree, searching from the specified top level
  * down to the lowest level (level 0). For each preserved page found, it invokes
@@ -343,14 +410,26 @@ static int __kho_radix_walk_tree(struct kho_radix_node *root,
  *         value from the callback that stopped the walk.
  */
 int kho_radix_walk_tree(struct kho_radix_tree *tree,
-			kho_radix_tree_walk_callback_t cb)
+			kho_radix_tree_walk_callback_t cb_data,
+			kho_radix_tree_walk_callback_t cb_meta)
 {
+	int err;
+
 	if (WARN_ON_ONCE(!tree->root))
 		return -EINVAL;
 
 	guard(mutex)(&tree->lock);
 
-	return __kho_radix_walk_tree(tree->root, KHO_TREE_MAX_DEPTH - 1, 0, cb);
+	/*
+	 * Report the root node itself — __kho_radix_walk_tree() only
+	 * reports children.
+	 */
+	err = cb_meta(virt_to_phys(tree->root), 0);
+	if (err)
+		return err;
+
+	return __kho_radix_walk_tree(tree->root, KHO_TREE_MAX_DEPTH - 1, 0,
+				     cb_data, cb_meta);
 }
 EXPORT_SYMBOL_GPL(kho_radix_walk_tree);
 
@@ -488,6 +567,11 @@ static int __init kho_preserved_memory_reserve(phys_addr_t phys,
 	info.order = order;
 	page->private = info.page_private;
 
+	return 0;
+}
+
+static int __init kho_preserved_noop_cb(phys_addr_t phys, unsigned int order)
+{
 	return 0;
 }
 
@@ -1314,7 +1398,7 @@ static int __init kho_mem_retrieve(const void *fdt)
 {
 	struct kho_radix_tree tree;
 	const phys_addr_t *mem;
-	int len;
+	int len, err;
 
 	/* Retrieve the KHO radix tree from passed-in FDT. */
 	mem = fdt_getprop(fdt, 0, KHO_FDT_MEMORY_MAP_PROP_NAME, &len);
@@ -1327,9 +1411,12 @@ static int __init kho_mem_retrieve(const void *fdt)
 	if (!*mem)
 		return -EINVAL;
 
-	tree.root = phys_to_virt(*mem);
-	mutex_init(&tree.lock);
-	return kho_radix_walk_tree(&tree, kho_preserved_memory_reserve);
+	err = kho_radix_tree_init(&tree, *mem);
+	if (err)
+		return err;
+
+	return kho_radix_walk_tree(&tree, kho_preserved_memory_reserve,
+				   kho_preserved_noop_cb);
 }
 
 static __init int kho_out_fdt_setup(void)
@@ -1365,11 +1452,9 @@ static __init int kho_init(void)
 	if (!kho_enable)
 		return 0;
 
-	tree->root = kzalloc(PAGE_SIZE, GFP_KERNEL);
-	if (!tree->root) {
-		err = -ENOMEM;
+	err = kho_radix_tree_init(tree, 0);
+	if (err)
 		goto err_free_scratch;
-	}
 
 	kho_out.fdt = kho_alloc_preserve(PAGE_SIZE);
 	if (IS_ERR(kho_out.fdt)) {
@@ -1421,7 +1506,7 @@ static __init int kho_init(void)
 err_free_fdt:
 	kho_unpreserve_free(kho_out.fdt);
 err_free_kho_radix_tree_root:
-	kfree(tree->root);
+	free_page((unsigned long)tree->root);
 	tree->root = NULL;
 err_free_scratch:
 	kho_out.fdt = NULL;
