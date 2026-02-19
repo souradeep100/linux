@@ -13,7 +13,6 @@
 #include <asm/mshyperv.h>
 #include <linux/kexec.h>
 #include <linux/kexec_handover.h>
-#include <linux/kho_radix_tree.h>
 #include <linux/libfdt.h>
 #include <linux/reboot.h>
 #include "mshv_root.h"
@@ -57,6 +56,20 @@ int mshv_unregister_preserve_pages(struct page *pg, unsigned int order)
 
 	return kho_radix_del_page(&preserved_pages_tree, pfn, order);
 }
+
+/**
+ * mshv_iterate_preserved() - Walk all preserved page ranges
+ * @cb_data: callback invoked for each preserved page range
+ * @cb_meta: callback invoked for each radix-tree metadata page
+ *
+ * Return: 0 on success, -errno on failure.
+ */
+int mshv_iterate_preserved(kho_radix_tree_walk_callback_t cb_data,
+			   kho_radix_tree_walk_callback_t cb_meta)
+{
+	return kho_radix_walk_tree(&preserved_pages_tree, cb_data, cb_meta);
+}
+EXPORT_SYMBOL_GPL(mshv_iterate_preserved);
 
 /* register individual page-ranges with KHO */
 static int preserve_page_cb(phys_addr_t phys, unsigned int order)
