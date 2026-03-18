@@ -79,7 +79,7 @@ static int preserve_page_cb(phys_addr_t phys, unsigned int order)
 	return kho_preserve_pages(phys_to_page(phys), BIT(order));
 }
 
-static int create_fdt(void)
+static int create_fdt(u64 *partition_ids, unsigned int nr_partition_ids)
 {
 	int err;
 	void *fdt;
@@ -107,6 +107,19 @@ static int create_fdt(void)
 	err = fdt_property(fdt, "root_table", &root_table, sizeof(root_table));
 	if (err)
 		return err;
+	if (nr_partition_ids) {
+		phys_addr_t ids_pa = virt_to_phys(partition_ids);
+		u32 count = nr_partition_ids;
+
+		err = fdt_property(fdt, "partition_ids", &ids_pa,
+				   sizeof(ids_pa));
+		if (err)
+			return err;
+		err = fdt_property(fdt, "nr_partition_ids", &count,
+				   sizeof(count));
+		if (err)
+			return err;
+	}
 	err = fdt_end_node(fdt);
 	if (err)
 		return err;
@@ -126,7 +139,7 @@ static int create_fdt(void)
  *
  * Return: 0 on success, -errno on error.
  */
-static int preserve_tree(void)
+static int preserve_tree(u64 *partition_ids, unsigned int nr_partition_ids)
 {
 	int err;
 
@@ -138,7 +151,7 @@ static int preserve_tree(void)
 	}
 
 	/* Populate the pre-allocated FDT page with current tree state */
-	err = create_fdt();
+	err = create_fdt(partition_ids, nr_partition_ids);
 	if (err) {
 		pr_warn("%s() - create_fdt() failed: %d\n", __func__, err);
 		return err;
@@ -184,11 +197,22 @@ static int reboot_cb(struct notifier_block *nb, unsigned long action,
 {
 	/* codes such as SYS_RESTART, SYS_HALT do not convey kexec specifically */
 	if (kexec_in_progress) {
+		u64 *partition_ids;
+		unsigned int nr_partition_ids;
 		int err;
 
-		/* Finalize handover: write KHO descriptors, flush metadata */
+		/*
+		 * Stop all VPs so no guest can modify memory that Linux will
+		 * re-use after kexec, then preserve the page tree.
+		 */
+		err = mshv_freeze_and_get_partition_ids(&partition_ids,
+						        &nr_partition_ids);
+		if (err)
+			panic("mshv_freeze_and_get_partition_ids() failed - must not kexec: %d\n",
+			      err);
+
 		pr_debug("%s() - KHO-preserving page tree\n", __func__);
-		err = preserve_tree();
+		err = preserve_tree(partition_ids, nr_partition_ids);
 		if (err)
 			panic("preserve_tree() failed - must not kexec: %d\n",
 			      err);
@@ -257,6 +281,57 @@ static int __init restore_tree(void)
 		return -EINVAL;
 
 	pr_debug("Restored tracking from KHO.\n");
+	return 0;
+}
+
+/**
+ * mshv_retrieve_frozen_partition_ids() - Retrieve frozen partition IDs
+ * @partition_ids: receives pointer to the preserved ID array, or NULL
+ * @nr_ids: receives the number of entries, or 0
+ *
+ * Counterpart to mshv_freeze_and_get_partition_ids(). Reads the partition
+ * ID list from the KHO-preserved FDT. The returned pointer (if non-NULL)
+ * refers to kho_alloc_preserve()'d memory from the previous kernel.
+ *
+ * Return: 0 on success (including when no IDs are found), negative errno on
+ *  error.
+ */
+int __init mshv_retrieve_frozen_partition_ids(u64 **partition_ids,
+					      unsigned int *nr_ids)
+{
+	int node, len;
+	const phys_addr_t *ids_pa;
+	const u32 *count_prop;
+
+	*partition_ids = NULL;
+	*nr_ids = 0;
+
+	if (!fdt_page)
+		return 0;
+
+	node = fdt_path_offset(fdt_page, "/");
+	if (node < 0)
+		return 0;
+
+	ids_pa = fdt_getprop(fdt_page, node, "partition_ids", &len);
+	if (!ids_pa)
+		return 0;
+
+	if (len != sizeof(*ids_pa)) {
+		pr_err("Malformed preserved FDT: invalid partition_ids property.\n");
+		return -EINVAL;
+	}
+
+	count_prop = fdt_getprop(fdt_page, node, "nr_partition_ids", &len);
+	if (!count_prop || len != sizeof(*count_prop)) {
+		pr_err("Malformed preserved FDT: invalid nr_partition_ids property.\n");
+		return -EINVAL;
+	}
+
+	*partition_ids = phys_to_virt(*ids_pa);
+	*nr_ids = *count_prop;
+
+	pr_info("Retrieved %u frozen partition ID(s) from KHO\n", *nr_ids);
 	return 0;
 }
 

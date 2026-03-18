@@ -194,6 +194,7 @@ struct mshv_root {
 	spinlock_t pt_ht_lock;
 	DECLARE_HASHTABLE(pt_htable, MSHV_PARTITIONS_HASH_BITS);
 	struct hv_partition_property_vmm_capabilities vmm_caps;
+	bool frozen;
 };
 
 /*
@@ -363,6 +364,8 @@ static inline void mshv_debugfs_vp_remove(struct mshv_vp *vp) { }
 
 extern struct mshv_root mshv_root;
 extern enum hv_scheduler_type hv_scheduler_type;
+
+int mshv_freeze_and_get_partition_ids(u64 **partition_ids, unsigned int *nr_ids);
 extern u8 * __percpu *hv_synic_eventring_tail;
 
 struct mshv_mem_region *mshv_region_create(u64 guest_pfn, u64 nr_pages,
