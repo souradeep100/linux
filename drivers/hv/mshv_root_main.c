@@ -2471,15 +2471,17 @@ static void __init vacuum_stale_partitions(struct device *dev)
 	int i, err;
 
 	err = mshv_retrieve_frozen_partition_ids(&ids, &nr);
+	dev_info(dev, "KHO-TRACE: vacuum_stale_partitions() entry\n");
 	if (err) {
-		dev_err(dev, "Failed to retrieve stale partition IDs: %d\n",
+		dev_err(dev, "KHO-TRACE: Failed to retrieve stale partition IDs: %d\n",
 			err);
 		return;
 	}
 
+	dev_info(dev, "KHO-TRACE: Found %u frozen partition(s) from previous kernel\n", nr);
 	for (i = 0; i < nr; i++) {
-		dev_info(dev, "Cleaning up stale partition %llu\n",
-			 ids[i]);
+		dev_info(dev, "KHO-TRACE: Cleaning up stale partition[%d] id=%llu\n",
+			 i, ids[i]);
 
 		err = hv_call_finalize_partition(ids[i]);
 		if (err)
@@ -2497,6 +2499,7 @@ static void __init vacuum_stale_partitions(struct device *dev)
 				 ids[i], err);
 	}
 
+	dev_info(dev, "KHO-TRACE: vacuum_stale_partitions() done, cleaned %u partition(s)\n", nr);
 	kho_restore_free(ids);
 }
 
@@ -2556,7 +2559,9 @@ static int __init mshv_parent_partition_init(void)
 	if (ret)
 		goto synic_cleanup;
 
+	dev_info(dev, "KHO-TRACE: mshv init - about to vacuum stale partitions\n");
 	vacuum_stale_partitions(dev);
+	dev_info(dev, "KHO-TRACE: mshv init - vacuum complete\n");
 
 	ret = root_scheduler_init(dev);
 	if (ret)

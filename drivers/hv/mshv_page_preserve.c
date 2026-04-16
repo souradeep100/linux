@@ -306,8 +306,10 @@ int __init mshv_retrieve_frozen_partition_ids(u64 **partition_ids,
 	*partition_ids = NULL;
 	*nr_ids = 0;
 
-	if (!fdt_page)
+	if (!fdt_page) {
+		pr_info("KHO-TRACE: No KHO FDT page - not a kexec boot\n");
 		return 0;
+	}
 
 	node = fdt_path_offset(fdt_page, "/");
 	if (node < 0)
@@ -331,7 +333,12 @@ int __init mshv_retrieve_frozen_partition_ids(u64 **partition_ids,
 	*partition_ids = phys_to_virt(*ids_pa);
 	*nr_ids = *count_prop;
 
-	pr_info("Retrieved %u frozen partition ID(s) from KHO\n", *nr_ids);
+	pr_info("KHO-TRACE: Retrieved %u frozen partition ID(s) from KHO (ids_pa=%pa)\n", *nr_ids, ids_pa);
+	{
+		unsigned int j;
+		for (j = 0; j < *nr_ids; j++)
+			pr_info("KHO-TRACE:   partition_id[%u] = %llu\n", j, (*partition_ids)[j]);
+	}
 	return 0;
 }
 

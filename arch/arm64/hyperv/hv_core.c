@@ -17,6 +17,16 @@
 #include <hyperv/hvhdk.h>
 #include <asm/mshyperv.h>
 
+#ifdef CONFIG_KEXEC_CORE
+#include <linux/kexec.h>
+#include <clocksource/hyperv_timer.h>
+#endif
+
+#ifdef CONFIG_CRASH_DUMP
+#include <linux/kexec.h>
+#include <clocksource/hyperv_timer.h>
+#include <asm/mshyperv.h>
+#endif
 /*
  * hv_do_hypercall- Invoke the specified hypercall
  */
@@ -35,6 +45,25 @@ u64 hv_do_hypercall(u64 control, void *input, void *output)
 }
 EXPORT_SYMBOL_GPL(hv_do_hypercall);
 
+/*
+ * This routine is called before kexec/kdump. It resets Hyper-V guest state
+ * to allow a clean handoff to the new kernel. For ARM64, we reset the Guest
+ * OS ID; other cleanup is handled via hv_stimer_cleanup() and
+ * hv_hyp_synic_disable_regs() in the shutdown path.
+ */
+void hyperv_cleanup(void)
+{
+	pr_info("SYNIC-TRACE: hyperv_cleanup() entry\n");
+	pr_info("SYNIC-TRACE: GUEST_OS_ID=%#018llx\n",
+		hv_get_vpreg(HV_REGISTER_GUEST_OS_ID));
+
+	/* Reset the Guest OS ID */
+	pr_info("SYNIC-TRACE: zeroing Guest OS ID\n");
+	hv_set_vpreg(HV_REGISTER_GUEST_OS_ID, 0);
+
+	pr_info("SYNIC-TRACE: hyperv_cleanup() done, post-state: GUEST_OS_ID=%#018llx\n",
+		hv_get_vpreg(HV_REGISTER_GUEST_OS_ID));
+}
 /*
  * hv_do_fast_hypercall8 -- Invoke the specified hypercall
  * with arguments in registers instead of physical memory.

@@ -43,6 +43,11 @@
 #include <linux/prctl.h>
 #include <linux/stacktrace.h>
 
+#ifdef CONFIG_HYPERV
+#include <linux/kexec.h>
+#include <asm/mshyperv.h>
+#include <clocksource/hyperv_timer.h>
+#endif
 #include <asm/alternative.h>
 #include <asm/arch_timer.h>
 #include <asm/compat.h>
@@ -88,11 +93,25 @@ void __noreturn arch_cpu_idle_dead(void)
  * avoid any code or data used by any SW CPU pin loop. The CPU hotplug
  * functionality embodied in smpt_shutdown_nonboot_cpus() to achieve this.
  */
+
 void machine_shutdown(void)
 {
-	smp_shutdown_nonboot_cpus(reboot_cpu);
-}
+#if defined(CONFIG_KEXEC_CORE) && defined(CONFIG_HYPERV)
+	if (kexec_in_progress && hv_is_hyperv_initialized()) {
+		extern void hv_kexec_cleanup_pre_cpus(void);
+		hv_kexec_cleanup_pre_cpus();
+	}
+#endif
 
+	smp_shutdown_nonboot_cpus(reboot_cpu);
+
+#if defined(CONFIG_KEXEC_CORE) && defined(CONFIG_HYPERV)
+	if (kexec_in_progress && hv_is_hyperv_initialized()) {
+		extern void hv_kexec_cleanup_post_cpus(void);
+		hv_kexec_cleanup_post_cpus();
+	}
+#endif
+}
 /*
  * Halting simply requires that the secondary CPUs stop performing any
  * activity (executing tasks, handling interrupts). smp_send_stop()
