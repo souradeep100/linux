@@ -465,6 +465,8 @@ static int mshv_synic_cpu_init(unsigned int cpu)
 	/* VMBus runs on L1VH and nested root; it owns SIMP/SIEFP/SCONTROL */
 	bool vmbus_active = !hv_root_partition() || hv_nested;
 
+	pr_info("SYNIC-TRACE: mshv_synic_init() CPU %u entry\n", cpu);
+
 	/*
 	 * Map the SYNIC message page. When VMBus is not active the
 	 * hypervisor pre-provisions the SIMP GPA but may not set
@@ -475,6 +477,10 @@ static int mshv_synic_cpu_init(unsigned int cpu)
 		simp.simp_enabled = true;
 		hv_set_non_nested_msr(HV_MSR_SIMP, simp.as_uint64);
 	}
+	pr_info("SYNIC-TRACE: CPU %u SIMP=%#018llx (gpa=%#llx enabled=%d)\n",
+		cpu, simp.as_uint64,
+		(u64)simp.base_simp_gpa << HV_HYP_PAGE_SHIFT,
+		simp.simp_enabled);
 	*msg_page = memremap(simp.base_simp_gpa << HV_HYP_PAGE_SHIFT,
 			     HV_HYP_PAGE_SIZE,
 			     MEMREMAP_WB);
@@ -491,6 +497,10 @@ static int mshv_synic_cpu_init(unsigned int cpu)
 		siefp.siefp_enabled = true;
 		hv_set_non_nested_msr(HV_MSR_SIEFP, siefp.as_uint64);
 	}
+	pr_info("SYNIC-TRACE: CPU %u SIEFP=%#018llx (gpa=%#llx enabled=%d)\n",
+		cpu, siefp.as_uint64,
+		(u64)siefp.base_siefp_gpa << PAGE_SHIFT,
+		siefp.siefp_enabled);
 	*event_flags_page = memremap(siefp.base_siefp_gpa << PAGE_SHIFT,
 				     PAGE_SIZE, MEMREMAP_WB);
 
@@ -499,6 +509,10 @@ static int mshv_synic_cpu_init(unsigned int cpu)
 
 	/* Setup the Synic's event ring page */
 	sirbp.as_uint64 = hv_get_non_nested_msr(HV_MSR_SIRBP);
+	pr_info("SYNIC-TRACE: CPU %u SIRBP=%#018llx (gpa=%#llx enabled=%d)\n",
+		cpu, sirbp.as_uint64,
+		(u64)sirbp.base_sirbp_gpa << PAGE_SHIFT,
+		sirbp.sirbp_enabled);
 
 	if (hv_root_partition()) {
 		*event_ring_page = memremap(sirbp.base_sirbp_gpa << PAGE_SHIFT,
@@ -523,6 +537,12 @@ static int mshv_synic_cpu_init(unsigned int cpu)
 
 	sirbp.sirbp_enabled = true;
 	hv_set_non_nested_msr(HV_MSR_SIRBP, sirbp.as_uint64);
+
+	pr_info("SYNIC-TRACE: CPU %u SINT0=%#018llx SINT5=%#018llx SCONTROL=%#018llx\n",
+		cpu,
+		hv_get_non_nested_msr(HV_MSR_SINT0 + HV_SYNIC_INTERCEPTION_SINT_INDEX),
+		hv_get_non_nested_msr(HV_MSR_SINT0 + HV_SYNIC_DOORBELL_SINT_INDEX),
+		hv_get_non_nested_msr(HV_MSR_SCONTROL));
 
 	if (mshv_sint_irq != -1)
 		enable_percpu_irq(mshv_sint_irq, 0);
@@ -553,6 +573,7 @@ static int mshv_synic_cpu_init(unsigned int cpu)
 		hv_set_non_nested_msr(HV_MSR_SCONTROL, sctrl.as_uint64);
 	}
 
+	pr_info("SYNIC-TRACE: mshv_synic_init() CPU %u done\n", cpu);
 	return 0;
 
 cleanup_siefp:
@@ -585,6 +606,18 @@ static int mshv_synic_cpu_exit(unsigned int cpu)
 		&spages->synic_event_ring_page;
 	/* VMBus runs on L1VH and nested root; it owns SIMP/SIEFP/SCONTROL */
 	bool vmbus_active = !hv_root_partition() || hv_nested;
+
+	pr_info("SYNIC-TRACE: mshv_synic_cleanup() CPU %u entry\n", cpu);
+	pr_info("SYNIC-TRACE: CPU %u SIMP=%#018llx SIEFP=%#018llx SIRBP=%#018llx\n",
+		cpu,
+		hv_get_non_nested_msr(HV_MSR_SIMP),
+		hv_get_non_nested_msr(HV_MSR_SIEFP),
+		hv_get_non_nested_msr(HV_MSR_SIRBP));
+	pr_info("SYNIC-TRACE: CPU %u SINT0=%#018llx SINT5=%#018llx SCONTROL=%#018llx\n",
+		cpu,
+		hv_get_non_nested_msr(HV_MSR_SINT0 + HV_SYNIC_INTERCEPTION_SINT_INDEX),
+		hv_get_non_nested_msr(HV_MSR_SINT0 + HV_SYNIC_DOORBELL_SINT_INDEX),
+		hv_get_non_nested_msr(HV_MSR_SCONTROL));
 
 	/* Disable the interrupt */
 	sint.as_uint64 = hv_get_non_nested_msr(HV_MSR_SINT0 + HV_SYNIC_INTERCEPTION_SINT_INDEX);
@@ -643,6 +676,7 @@ static int mshv_synic_cpu_exit(unsigned int cpu)
 		hv_set_non_nested_msr(HV_MSR_SCONTROL, sctrl.as_uint64);
 	}
 
+	pr_info("SYNIC-TRACE: mshv_synic_cleanup() CPU %u done\n", cpu);
 	return 0;
 }
 

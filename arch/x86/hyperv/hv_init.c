@@ -274,6 +274,8 @@ static int hv_cpu_die(unsigned int cpu)
 	unsigned int new_cpu;
 	void **ghcb_va;
 
+	pr_info("SYNIC-TRACE: hv_cpu_die() CPU %u\n", cpu);
+
 	if (hv_ghcb_pg) {
 		ghcb_va = (void **)this_cpu_ptr(hv_ghcb_pg);
 		if (*ghcb_va)
@@ -628,9 +630,24 @@ void hyperv_cleanup(void)
 	union hv_x64_msr_hypercall_contents hypercall_msr;
 	union hv_reference_tsc_msr tsc_msr;
 
+	pr_info("SYNIC-TRACE: hyperv_cleanup() entry\n");
+	pr_info("SYNIC-TRACE: GUEST_OS_ID=%#018llx VP_ASSIST=%#018llx\n",
+		native_read_msr(HV_X64_MSR_GUEST_OS_ID),
+		native_read_msr(HV_X64_MSR_VP_ASSIST_PAGE));
+	pr_info("SYNIC-TRACE: SIMP=%#018llx SIEFP=%#018llx SIRBP=%#018llx\n",
+		native_read_msr(HV_X64_MSR_SIMP),
+		native_read_msr(HV_X64_MSR_SIEFP),
+		native_read_msr(HV_X64_MSR_SIRBP));
+	pr_info("SYNIC-TRACE: SINT0=%#018llx SINT5=%#018llx SCONTROL=%#018llx\n",
+		native_read_msr(HV_X64_MSR_SINT0),
+		native_read_msr(HV_X64_MSR_SINT0 + 5),
+		native_read_msr(HV_X64_MSR_SCONTROL));
+
 	/* Reset our OS id */
+	pr_info("SYNIC-TRACE: zeroing Guest OS ID\n");
 	wrmsrq(HV_X64_MSR_GUEST_OS_ID, 0);
 	hv_ivm_msr_write(HV_X64_MSR_GUEST_OS_ID, 0);
+	pr_info("SYNIC-TRACE: Guest OS ID zeroed\n");
 
 	/*
 	 * Reset hv_hypercall_pg before resetting it in the hypervisor.
@@ -652,6 +669,15 @@ void hyperv_cleanup(void)
 	tsc_msr.as_uint64 = hv_get_msr(HV_X64_MSR_REFERENCE_TSC);
 	tsc_msr.enable = 0;
 	hv_set_msr(HV_X64_MSR_REFERENCE_TSC, tsc_msr.as_uint64);
+
+	pr_info("SYNIC-TRACE: hyperv_cleanup() done, post-state:\n");
+	pr_info("SYNIC-TRACE: GUEST_OS_ID=%#018llx VP_ASSIST=%#018llx\n",
+		native_read_msr(HV_X64_MSR_GUEST_OS_ID),
+		native_read_msr(HV_X64_MSR_VP_ASSIST_PAGE));
+	pr_info("SYNIC-TRACE: SIMP=%#018llx SIEFP=%#018llx SIRBP=%#018llx\n",
+		native_read_msr(HV_X64_MSR_SIMP),
+		native_read_msr(HV_X64_MSR_SIEFP),
+		native_read_msr(HV_X64_MSR_SIRBP));
 }
 
 void hyperv_report_panic(struct pt_regs *regs, long err, bool in_die)

@@ -237,6 +237,9 @@ void hv_remove_crash_handler(void)
 #ifdef CONFIG_KEXEC_CORE
 static void hv_machine_shutdown(void)
 {
+	pr_info("SYNIC-TRACE: hv_machine_shutdown() entry kexec_in_progress=%d\n",
+		kexec_in_progress);
+
 	if (kexec_in_progress) {
 		hv_stimer_global_cleanup();
 
@@ -251,12 +254,15 @@ static void hv_machine_shutdown(void)
 	if (kexec_in_progress)
 		cpuhp_remove_state(CPUHP_AP_HYPERV_ONLINE);
 
+	pr_info("SYNIC-TRACE: hv_machine_shutdown() calling native_machine_shutdown()\n");
 	/* The function calls stop_other_cpus(). */
 	native_machine_shutdown();
 
+	pr_info("SYNIC-TRACE: hv_machine_shutdown() calling hyperv_cleanup()\n");
 	/* Disable the hypercall page when there is only 1 active CPU. */
 	if (kexec_in_progress)
 		hyperv_cleanup();
+	pr_info("SYNIC-TRACE: hv_machine_shutdown() done\n");
 }
 #endif /* CONFIG_KEXEC_CORE */
 
