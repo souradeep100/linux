@@ -171,6 +171,9 @@ int hv_call_finalize_partition(u64 partition_id)
 				       *(u64 *)&input);
 
 	trace_mshv_hvcall_finalize_partition(partition_id, status);
+	if (hv_result(status) != HV_STATUS_SUCCESS)
+		pr_info("KHO-TRACE: finalize_partition(%llu) raw HV_STATUS=0x%llx\n",
+			partition_id, (u64)hv_result(status));
 
 	return hv_result_to_errno(status);
 }
@@ -184,6 +187,9 @@ int hv_call_delete_partition(u64 partition_id)
 	status = hv_do_fast_hypercall8(HVCALL_DELETE_PARTITION, *(u64 *)&input);
 
 	trace_mshv_hvcall_delete_partition(partition_id, status);
+	if (hv_result(status) != HV_STATUS_SUCCESS)
+		pr_info("KHO-TRACE: delete_partition(%llu) raw HV_STATUS=0x%llx\n",
+			partition_id, (u64)hv_result(status));
 
 	return hv_result_to_errno(status);
 }
