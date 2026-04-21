@@ -21,10 +21,10 @@
  * scheme. Each key is an unsigned long that combines a page's physical
  * address and its order.
  *
- * Client code is responsible for allocating the root node of the tree,
- * initializing the mutex lock, and managing its lifecycle. It must use the
- * tree data structures defined in the KHO ABI,
- * `include/linux/kho/abi/kexec_handover.h`.
+ * Client code must initialize the tree using kho_radix_tree_init(). Pass
+ * a physical address to restore a tree preserved across kexec, or 0 to
+ * allocate a fresh empty tree. The tree uses data structures defined in
+ * the KHO ABI, `include/linux/kho/abi/kexec_handover.h`.
  */
 
 struct kho_radix_node;
@@ -32,6 +32,19 @@ struct kho_radix_node;
 struct kho_radix_tree {
 	struct kho_radix_node *root;
 	struct mutex lock; /* protects the tree's structure and root pointer */
+	bool frozen;
+};
+
+/**
+ * struct kho_radix_crash_tree - Read-only radix tree for crash kernel use.
+ *
+ * In the crash kernel, the old kernel's memory is not in the direct map.
+ * This variant uses memremap() during init to map the tree nodes and
+ * converts the physical address table entries to virtual addresses in-place,
+ * enabling efficient pointer-based traversal without per-lookup remapping.
+ */
+struct kho_radix_crash_tree {
+	struct kho_radix_node *root;
 };
 
 typedef int (*kho_radix_tree_walk_callback_t)(phys_addr_t phys,
@@ -50,19 +63,47 @@ int kho_radix_walk_tree(struct kho_radix_tree *tree,
 
 #else  /* #ifdef CONFIG_KEXEC_HANDOVER */
 
-static inline int kho_radix_add_page(struct kho_radix_tree *tree, long pfn,
-				     unsigned int order)
+static inline int kho_radix_tree_init(struct kho_radix_tree *tree,
+				      phys_addr_t root_pa)
 {
 	return -EOPNOTSUPP;
 }
 
-static inline void kho_radix_del_page(struct kho_radix_tree *tree,
-				      unsigned long pfn, unsigned int order) { }
-
-static inline int kho_radix_walk_tree(struct kho_radix_tree *tree,
-				      kho_radix_tree_walk_callback_t cb)
+static inline int kho_radix_tree_freeze(struct kho_radix_tree *tree)
 {
 	return -EOPNOTSUPP;
+}
+
+static inline int kho_radix_add_page(struct kho_radix_tree *tree,
+				     unsigned long pfn, unsigned int order)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int kho_radix_del_page(struct kho_radix_tree *tree,
+				     unsigned long pfn, unsigned int order)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int kho_radix_walk_tree(struct kho_radix_tree *tree,
+				      kho_radix_tree_walk_callback_t cb_data,
+				      kho_radix_tree_walk_callback_t cb_meta)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int kho_radix_crash_init(struct kho_radix_crash_tree *tree,
+				       phys_addr_t root_pa)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline bool kho_radix_crash_contains_page(
+					struct kho_radix_crash_tree *tree,
+					unsigned long pfn, unsigned int order)
+{
+	return false;
 }
 
 #endif /* #ifdef CONFIG_KEXEC_HANDOVER */
