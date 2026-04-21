@@ -753,9 +753,6 @@ mshv_unregister_doorbell(u64 partition_id, int doorbell_portid)
 static int mshv_synic_reboot_notify(struct notifier_block *nb,
 			      unsigned long code, void *unused)
 {
-	if (!hv_root_partition())
-		return 0;
-
 	mshv_debugfs_exit();
 	cpuhp_remove_state(synic_cpuhp_online);
 	return 0;
