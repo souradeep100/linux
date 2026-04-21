@@ -231,6 +231,7 @@ static int __init restore_tree(void)
 {
 	void *fdt;
 	phys_addr_t fdt_pa;
+	size_t fdt_size;
 	int len;
 	int node;
 	const phys_addr_t *root_table_fdt_ptr;

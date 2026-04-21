@@ -17,13 +17,42 @@
 #include <linux/cpuhotplug.h>
 #include <asm/mshyperv.h>
 
-static bool hyperv_initialized;
 
+#ifdef CONFIG_KEXEC_CORE
+#include <linux/kexec.h>
+#include <clocksource/hyperv_timer.h>
+#endif
+
+#ifdef CONFIG_CRASH_DUMP
+#include <clocksource/hyperv_timer.h>
+#endif
+
+#ifdef CONFIG_CRASH_DUMP
+/* Declaration for hv_hyp_synic_disable_regs from drivers/hv */
+extern void hv_hyp_synic_disable_regs(unsigned int cpu);
+#endif
+
+/* Forward declarations */
+#ifdef CONFIG_KEXEC_CORE
+void hv_kexec_cleanup_pre_cpus(void);
+void hv_kexec_cleanup_post_cpus(void);
+#endif
+
+#ifdef CONFIG_CRASH_DUMP
+void hv_crash_cleanup(struct pt_regs *regs);
+#endif
+static bool hyperv_initialized;
+static void (*hv_kexec_handler)(void);
+static void (*hv_crash_handler)(struct pt_regs *regs);
 int hv_get_hypervisor_version(union hv_hypervisor_version_info *info)
 {
 	hv_get_vpreg_128(HV_REGISTER_HYPERVISOR_VERSION,
 			 (struct hv_get_vp_registers_output *)info);
 
+#ifdef CONFIG_CRASH_DUMP
+/* Declaration for hv_hyp_synic_disable_regs from drivers/hv */
+extern void hv_hyp_synic_disable_regs(unsigned int cpu);
+#endif
 	return 0;
 }
 EXPORT_SYMBOL_GPL(hv_get_hypervisor_version);
@@ -134,3 +163,94 @@ bool hv_is_hyperv_initialized(void)
 	return hyperv_initialized;
 }
 EXPORT_SYMBOL_GPL(hv_is_hyperv_initialized);
+
+void hv_setup_kexec_handler(void (*handler)(void))
+{
+	hv_kexec_handler = handler;
+}
+
+void hv_remove_kexec_handler(void)
+{
+	hv_kexec_handler = NULL;
+}
+
+void hv_setup_crash_handler(void (*handler)(struct pt_regs *regs))
+{
+	hv_crash_handler = handler;
+}
+
+void hv_remove_crash_handler(void)
+{
+       hv_crash_handler = NULL;
+}
+
+
+#ifdef CONFIG_KEXEC_CORE
+/*
+ * Called from machine_shutdown() in process.c to perform Hyper-V cleanup
+ * during kexec before stopping secondary CPUs.
+ */
+void hv_kexec_cleanup_pre_cpus(void)
+{
+       pr_info("SYNIC-TRACE: hv_kexec_cleanup_pre_cpus() entry\n");
+
+       /* Stop synthetic timers before unloading vmbus */
+       hv_stimer_global_cleanup();
+
+       /* Call vmbus kexec handler */
+       if (hv_kexec_handler)
+               hv_kexec_handler();
+
+       pr_info("SYNIC-TRACE: hv_kexec_cleanup_pre_cpus() done\n");
+}
+EXPORT_SYMBOL_GPL(hv_kexec_cleanup_pre_cpus);
+
+/*
+ * Called from machine_shutdown() in process.c to perform Hyper-V cleanup
+ * during kexec after stopping secondary CPUs.
+ */
+void hv_kexec_cleanup_post_cpus(void)
+{
+       pr_info("SYNIC-TRACE: hv_kexec_cleanup_post_cpus() entry\n");
+
+       /*
+        * Call hv_common_cpu_die() on all CPUs, particularly CPU0,
+        * to clean up the VP Assist Pages. Without this, the hypervisor
+        * can corrupt the old VP Assist Pages and crash the kexec kernel.
+        * Secondary CPUs already go through this via smp_shutdown_nonboot_cpus(),
+        * but CPU0 needs explicit cleanup.
+        */
+       cpuhp_remove_state(CPUHP_AP_HYPERV_ONLINE);
+
+       pr_info("SYNIC-TRACE: hv_kexec_cleanup_post_cpus() calling hyperv_cleanup()\n");
+       /* Disable the hypercall page when only CPU0 is active */
+       hyperv_cleanup();
+
+       pr_info("SYNIC-TRACE: hv_kexec_cleanup_post_cpus() done\n");
+}
+EXPORT_SYMBOL_GPL(hv_kexec_cleanup_post_cpus);
+#endif /* CONFIG_KEXEC_CORE */
+
+#ifdef CONFIG_CRASH_DUMP
+/*
+ * Called from machine_crash_shutdown() in machine_kexec.c to perform
+ * Hyper-V cleanup during a kernel crash.
+ */
+void hv_crash_cleanup(struct pt_regs *regs)
+{
+       pr_info("SYNIC-TRACE: hv_crash_cleanup() entry\n");
+
+       if (hv_crash_handler)
+               hv_crash_handler(regs);
+
+       /* Clean up the current CPU's stimer and SynIC */
+       hv_stimer_cleanup(smp_processor_id());
+       hv_hyp_synic_disable_regs(smp_processor_id());
+
+       /* Disable the hypercall page during crash (only 1 active CPU) */
+       hyperv_cleanup();
+
+       pr_info("SYNIC-TRACE: hv_crash_cleanup() done\n");
+}
+EXPORT_SYMBOL_GPL(hv_crash_cleanup);
+#endif /* CONFIG_CRASH_DUMP */

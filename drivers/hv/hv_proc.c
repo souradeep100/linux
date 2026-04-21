@@ -8,6 +8,7 @@
 #include <linux/minmax.h>
 #include <linux/export.h>
 #include <asm/mshyperv.h>
+#include "mshv_page_preserve.h"
 
 /*
  * See struct hv_deposit_memory. The first u64 is partition ID, the rest
@@ -21,6 +22,7 @@ int hv_call_deposit_pages(int node, u64 partition_id, u32 num_pages)
 	struct page **pages, *page;
 	int *counts;
 	int num_allocations;
+	int reg_i = 0, reg_j = 0;
 	int i, j, page_count;
 	int order;
 	u64 status;
@@ -90,18 +92,38 @@ int hv_call_deposit_pages(int node, u64 partition_id, u32 num_pages)
 	if (!hv_result_success(status)) {
 		hv_status_err(status, "\n");
 		ret = hv_result_to_errno(status);
-		goto err_free_allocations;
+		reg_i = num_allocations;
+		goto err_unregister;
+	}
+
+	/* Register the pages for preservation across kexec */
+	for (i = 0; i < num_allocations; ++i) {
+		for (j = 0; j < counts[i]; ++j) {
+			ret = mshv_register_preserve_pages(pages[i] + j, 0);
+			if (ret) {
+				reg_i = i;
+				reg_j = j;
+				goto err_unregister;
+			}
+		}
 	}
 
 	ret = 0;
 	goto free_buf;
 
-err_free_allocations:
+err_unregister:
 	for (i = 0; i < num_allocations; ++i) {
-		base_pfn = page_to_pfn(pages[i]);
-		for (j = 0; j < counts[i]; ++j)
-			__free_page(pfn_to_page(base_pfn + j));
+		for (j = 0; j < counts[i]; ++j) {
+			if (i == reg_i && j == reg_j)
+				goto err_free_allocations;
+			mshv_unregister_preserve_pages(pages[i] + j, 0);
+		}
 	}
+
+err_free_allocations:
+	for (i = 0; i < num_allocations; ++i)
+		for (j = 0; j < counts[i]; ++j)
+			__free_page(pages[i] + j);
 
 free_buf:
 	free_page((unsigned long)pages);
@@ -280,8 +302,9 @@ bool hv_lp_exists(u32 lp_index)
 
 	if (!hv_result_success(status) &&
 	    hv_result(status) != HV_STATUS_INVALID_LP_INDEX) {
-		hv_status_err(status, "\n");
-		BUG();
+		hv_status_err(status, "unexpected error in hv_lp_exists\n");
+		WARN_ON_ONCE(1);
+		return false;
 	}
 
 	return hv_result_success(status);

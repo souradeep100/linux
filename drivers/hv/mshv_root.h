@@ -17,6 +17,7 @@
 #include <linux/build_bug.h>
 #include <linux/mmu_notifier.h>
 #include <uapi/linux/mshv.h>
+#include "mshv_page_preserve.h"
 #include "mshv_trace.h"
 
 /*
@@ -194,6 +195,7 @@ struct mshv_root {
 	spinlock_t pt_ht_lock;
 	DECLARE_HASHTABLE(pt_htable, MSHV_PARTITIONS_HASH_BITS);
 	struct hv_partition_property_vmm_capabilities vmm_caps;
+	bool frozen;
 };
 
 /*
@@ -377,5 +379,9 @@ int mshv_region_get(struct mshv_mem_region *region);
 bool mshv_region_handle_gfn_fault(struct mshv_mem_region *region, u64 gfn);
 void mshv_region_movable_fini(struct mshv_mem_region *region);
 bool mshv_region_movable_init(struct mshv_mem_region *region);
+
+const char *scheduler_type_to_string(enum hv_scheduler_type type);
+
+int mshv_freeze_and_get_partition_ids(u64 **partition_ids, unsigned int *nr_ids);
 
 #endif /* _MSHV_ROOT_H_ */

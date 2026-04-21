@@ -33,6 +33,12 @@ static struct dentry *mshv_debugfs;
 static struct dentry *mshv_debugfs_partition;
 static struct dentry *mshv_debugfs_lp;
 static struct dentry **parent_vp_stats;
+
+static unsigned long mshv_pt_count_data;
+static unsigned long mshv_pt_count_meta;
+static struct seq_file *mshv_pt_stat_file;
+static DEFINE_MUTEX(mshv_pt_lock);
+
 static struct dentry *parent_partition_stats;
 
 static u64 mshv_lps_count;
@@ -668,8 +674,82 @@ void mshv_debugfs_partition_remove(struct mshv_partition *partition)
 				 partition->pt_stats_dentry);
 }
 
+static int pt_count_data_cb(phys_addr_t phys __maybe_unused, unsigned int order)
+{
+	mshv_pt_count_data += BIT(order);
+	return 0;
+}
+
+static int pt_count_meta_cb(phys_addr_t phys __maybe_unused, unsigned int order)
+{
+	mshv_pt_count_meta += BIT(order);
+	return 0;
+}
+
+static int pt_stats_show(struct seq_file *m, void *v)
+{
+	guard(mutex)(&mshv_pt_lock);
+	mshv_pt_count_data = 0;
+	mshv_pt_count_meta = 0;
+
+	mshv_iterate_preserved(pt_count_data_cb, pt_count_meta_cb);
+	seq_printf(m, "Data pages: %lu\n", mshv_pt_count_data);
+	seq_printf(m, "Meta pages: %lu\n", mshv_pt_count_meta);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(pt_stats);
+
+static int pt_tree_data_cb(phys_addr_t phys, unsigned int order)
+{
+	seq_printf(mshv_pt_stat_file, "data pfns: %#llx+%lu\n",
+		   phys >> PAGE_SHIFT, BIT(order));
+	return 0;
+}
+
+static int pt_tree_meta_cb(phys_addr_t phys, unsigned int order)
+{
+	seq_printf(mshv_pt_stat_file, "meta pfns: %#llx+%lu\n",
+		   phys >> PAGE_SHIFT, BIT(order));
+	return 0;
+}
+
+static int pt_tree_show(struct seq_file *m, void *v)
+{
+	guard(mutex)(&mshv_pt_lock);
+	mshv_pt_stat_file = m;
+
+	mshv_iterate_preserved(pt_tree_data_cb, pt_tree_meta_cb);
+	mshv_pt_stat_file = NULL;
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(pt_tree);
+
+static int __init mshv_debugfs_pt_create(struct dentry *parent)
+{
+	struct dentry *d;
+
+	d = debugfs_create_file("pt_stats", 0400, parent, NULL, &pt_stats_fops);
+	if (IS_ERR(d))
+		return PTR_ERR(d);
+
+	d = debugfs_create_file("pt_tree", 0400, parent, NULL, &pt_tree_fops);
+	if (IS_ERR(d))
+		return PTR_ERR(d);
+
+	return 0;
+}
+
+static int scheduler_info_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "Scheduler type: %s (%d)\n",
+		   scheduler_type_to_string(hv_scheduler_type), hv_scheduler_type);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(scheduler_info);
+
 int __init mshv_debugfs_init(void)
 {
+	struct dentry *d;
 	int err;
 
 	mshv_debugfs = debugfs_create_dir("mshv", NULL);
@@ -693,6 +773,17 @@ int __init mshv_debugfs_init(void)
 	err = mshv_debugfs_parent_partition_create();
 	if (err)
 		goto unmap_lp_stats;
+
+	err = mshv_debugfs_pt_create(mshv_debugfs);
+	if (err)
+		goto unmap_lp_stats;
+
+	d = debugfs_create_file("scheduler_info", 0400, mshv_debugfs, NULL,
+				&scheduler_info_fops);
+	if (IS_ERR(d)) {
+		err = PTR_ERR(d);
+		goto unmap_lp_stats;
+	}
 
 	return 0;
 

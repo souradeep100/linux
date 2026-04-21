@@ -52,14 +52,21 @@ typedef int (*kho_radix_tree_walk_callback_t)(phys_addr_t phys,
 
 #ifdef CONFIG_KEXEC_HANDOVER
 
+int kho_radix_tree_init(struct kho_radix_tree *tree, phys_addr_t root_pa);
+int kho_radix_tree_freeze(struct kho_radix_tree *tree);
+
 int kho_radix_add_page(struct kho_radix_tree *tree, unsigned long pfn,
 		       unsigned int order);
-
-void kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
-			unsigned int order);
-
+int kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
+		       unsigned int order);
 int kho_radix_walk_tree(struct kho_radix_tree *tree,
-			kho_radix_tree_walk_callback_t cb);
+			kho_radix_tree_walk_callback_t cb_data,
+			kho_radix_tree_walk_callback_t cb_meta);
+
+int kho_radix_crash_init(struct kho_radix_crash_tree *tree, phys_addr_t root_pa);
+
+bool kho_radix_crash_contains_page(struct kho_radix_crash_tree *tree,
+				   unsigned long pfn, unsigned int order);
 
 #else  /* #ifdef CONFIG_KEXEC_HANDOVER */
 

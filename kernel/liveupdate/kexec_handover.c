@@ -285,12 +285,11 @@ EXPORT_SYMBOL_GPL(kho_radix_add_page);
  * @pfn: The page frame number of the page to unpreserve.
  * @order: The order of the page.
  *
- * This function traverses the radix tree and clears the bit corresponding to
- * the page, effectively removing its "preserved" status. It does not free
- * the tree's intermediate nodes, even if they become empty.
+ * Return: 0 on success, -EINVAL if the tree is uninitialized, -EBUSY if
+ *         frozen, -ENOENT if the page was not preserved.
  */
-void kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
-			unsigned int order)
+int kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
+		       unsigned int order)
 {
 	unsigned long key = kho_radix_encode_key(PFN_PHYS(pfn), order);
 	struct kho_radix_node *node = tree->root;
@@ -298,22 +297,20 @@ void kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
 	unsigned int i, idx;
 
 	if (WARN_ON_ONCE(!tree->root))
-		return;
+		return -EINVAL;
 
 	might_sleep();
-
 	guard(mutex)(&tree->lock);
+
+	if (WARN_ON_ONCE(tree->frozen))
+		return -EBUSY;
 
 	/* Go from high levels to low levels */
 	for (i = KHO_TREE_MAX_DEPTH - 1; i > 0; i--) {
 		idx = kho_radix_get_table_index(key, i);
 
-		/*
-		 * Attempting to delete a page that has not been preserved,
-		 * return with a warning.
-		 */
-		if (WARN_ON(!node->table[idx]))
-			return;
+		if (!node->table[idx])
+			return -ENOENT;
 
 		node = phys_to_virt(node->table[idx]);
 	}
@@ -322,6 +319,8 @@ void kho_radix_del_page(struct kho_radix_tree *tree, unsigned long pfn,
 	leaf = (struct kho_radix_leaf *)node;
 	idx = kho_radix_get_bitmap_index(key);
 	__clear_bit(idx, leaf->bitmap);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(kho_radix_del_page);
 
@@ -640,7 +639,7 @@ struct page *kho_restore_pages(phys_addr_t phys, unsigned long nr_pages)
 	unsigned long pfn = start_pfn;
 
 	while (pfn < end_pfn) {
-		const unsigned int order =
+		unsigned int order =
 			min(count_trailing_zeros(pfn), ilog2(end_pfn - pfn));
 		struct page *page = kho_restore_page(PFN_PHYS(pfn), false);
 
@@ -1070,7 +1069,7 @@ int kho_preserve_pages(struct page *page, unsigned long nr_pages)
 	}
 
 	while (pfn < end_pfn) {
-		const unsigned int order =
+		unsigned int order =
 			min(count_trailing_zeros(pfn), ilog2(end_pfn - pfn));
 
 		/*
@@ -1557,9 +1556,12 @@ static int __init kho_mem_retrieve(const void *fdt)
 	if (!*mem)
 		return -EINVAL;
 
-	tree.root = phys_to_virt(*mem);
-	mutex_init(&tree.lock);
-	return kho_radix_walk_tree(&tree, kho_preserved_memory_reserve);
+	err = kho_radix_tree_init(&tree, *mem);
+	if (err)
+		return err;
+
+	return kho_radix_walk_tree(&tree, kho_preserved_memory_reserve,
+				   kho_preserved_noop_cb);
 }
 
 static __init int kho_out_fdt_setup(void)
