@@ -177,7 +177,7 @@ static int preserve_tree(u64 *partition_ids, unsigned int nr_partition_ids)
 		return err;
 	}
 
-	err = kho_add_subtree(FDT_SUBTREE_MSHV, fdt_page);
+	err = kho_add_subtree(FDT_SUBTREE_MSHV, fdt_page, fdt_totalsize(fdt_page));
 	if (err) {
 		/* KHO will abort and undo all preservations. We cannot kexec. */
 		pr_warn("%s() - kho_add_subtree() failed: %d\n", __func__, err);
@@ -236,7 +236,7 @@ static int __init restore_tree(void)
 	const phys_addr_t *root_table_fdt_ptr;
 	int err;
 
-	err = kho_retrieve_subtree(FDT_SUBTREE_MSHV, &fdt_pa);
+	err = kho_retrieve_subtree(FDT_SUBTREE_MSHV, &fdt_pa, NULL);
 	if (err)
 		return err;
 
