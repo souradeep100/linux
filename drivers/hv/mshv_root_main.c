@@ -2065,9 +2065,12 @@ int mshv_freeze_and_get_partition_ids(u64 **partition_ids, unsigned int *nr_ids)
  * vacuum_stale_partitions() - Tear down partitions left by a prior kernel.
  * @dev: device for logging
  *
- * After kexec the previous kernel's partitions are still alive in the
- * hypervisor. Retrieve their IDs from the KHO-preserved FDT and finalize,
- * withdraw, and delete each one so the deposited pages return to the free pool.
+ * After kexec the previous kernel's partitions may still be alive in the
+ * hypervisor.  Retrieve their IDs from the KHO-preserved FDT and finalize,
+ * withdraw, and delete each one so the deposited pages return to the free
+ * pool.  Partitions that were already destroyed in the outgoing kernel
+ * (e.g. on ARM64 where the VMM may exit during freeze) are detected via
+ * HV_STATUS_INVALID_PARTITION_ID and silently skipped.
  */
 static void __init vacuum_stale_partitions(struct device *dev)
 {
@@ -2076,19 +2079,45 @@ static void __init vacuum_stale_partitions(struct device *dev)
 	int i, err;
 
 	err = mshv_retrieve_frozen_partition_ids(&ids, &nr);
-	dev_info(dev, "KHO-TRACE: vacuum_stale_partitions() entry\n");
 	if (err) {
-		dev_err(dev, "KHO-TRACE: Failed to retrieve stale partition IDs: %d\n",
+		dev_err(dev, "Failed to retrieve stale partition IDs: %d\n",
 			err);
 		return;
 	}
 
-	dev_info(dev, "KHO-TRACE: Found %u frozen partition(s) from previous kernel\n", nr);
-	for (i = 0; i < nr; i++) {
-		dev_info(dev, "KHO-TRACE: Cleaning up stale partition[%d] id=%llu\n",
-			 i, ids[i]);
+	if (!nr)
+		return;
 
+	dev_info(dev, "Vacuuming %u stale partition(s) from previous kernel\n", nr);
+
+	for (i = 0; i < nr; i++) {
+		/*
+		 * On ARM64, the freeze path causes VP dispatch ioctls to
+		 * unwind, which may lead the VMM (e.g. cloud-hypervisor) to
+		 * exit.  If the VMM exits before machine_kexec(), its
+		 * partition FDs are closed and destroy_partition() runs in
+		 * the outgoing kernel -- finalizing, withdrawing, and
+		 * deleting the partition.  In that case finalize here returns
+		 * HV_STATUS_INVALID_PARTITION_ID (-EINVAL) because the
+		 * partition no longer exists.  This is harmless: skip the
+		 * partition and continue.
+		 *
+		 * On x86, stop_other_cpus() halts secondary CPUs via NMI
+		 * without killing threads or closing FDs, so partitions
+		 * always survive and vacuum must clean them up.
+		 *
+		 * Handling -EINVAL gracefully makes vacuum architecture-
+		 * agnostic and also covers the ARM64 race where the VMM
+		 * did not exit before machine_kexec() (e.g. the VMM was
+		 * between ioctls when freeze ran and never observed the
+		 * frozen flag before the kexec jump).
+		 */
 		err = hv_call_finalize_partition(ids[i]);
+		if (err == -EINVAL) {
+			dev_info(dev, "partition %llu already destroyed, skipping\n",
+				 ids[i]);
+			continue;
+		}
 		if (err)
 			dev_warn(dev, "finalize partition %llu failed: %d\n",
 				 ids[i], err);
@@ -2104,7 +2133,6 @@ static void __init vacuum_stale_partitions(struct device *dev)
 				 ids[i], err);
 	}
 
-	dev_info(dev, "KHO-TRACE: vacuum_stale_partitions() done, cleaned %u partition(s)\n", nr);
 	kho_restore_free(ids);
 }
 
