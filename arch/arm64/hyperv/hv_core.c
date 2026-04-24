@@ -36,6 +36,28 @@ u64 hv_do_hypercall(u64 control, void *input, void *output)
 EXPORT_SYMBOL_GPL(hv_do_hypercall);
 
 /*
+ * hyperv_cleanup - Reset Hyper-V guest state before kexec/kdump.
+ *
+ * Overrides the __weak stub in hv_common.c.  On ARM64 L1VH this
+ * resets the Guest OS ID register so the hypervisor knows the old
+ * kernel is gone.  Other cleanup (stimers, SynIC, VMBus) is handled
+ * by hv_kexec_cleanup_pre/post_cpus() and hv_crash_cleanup().
+ */
+void hyperv_cleanup(void)
+{
+	pr_info("SYNIC-TRACE: hyperv_cleanup() entry\n");
+	pr_info("SYNIC-TRACE: GUEST_OS_ID=%#018llx\n",
+		hv_get_vpreg(HV_REGISTER_GUEST_OS_ID));
+
+	/* Reset the Guest OS ID */
+	pr_info("SYNIC-TRACE: zeroing Guest OS ID\n");
+	hv_set_vpreg(HV_REGISTER_GUEST_OS_ID, 0);
+
+	pr_info("SYNIC-TRACE: hyperv_cleanup() done, post-state: GUEST_OS_ID=%#018llx\n",
+		hv_get_vpreg(HV_REGISTER_GUEST_OS_ID));
+}
+
+/*
  * hv_do_fast_hypercall8 -- Invoke the specified hypercall
  * with arguments in registers instead of physical memory.
  * Avoids the overhead of virt_to_phys for simple hypercalls.
