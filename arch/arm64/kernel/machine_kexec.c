@@ -18,6 +18,7 @@
 #include <asm/cacheflush.h>
 #include <asm/cpu_ops.h>
 #include <asm/daifflags.h>
+#include <asm/mshyperv.h>
 #include <asm/memory.h>
 #include <asm/mmu.h>
 #include <asm/mmu_context.h>
@@ -210,6 +211,13 @@ void machine_kexec(struct kimage *kimage)
 void machine_crash_shutdown(struct pt_regs *regs)
 {
 	local_irq_disable();
+
+#if defined(CONFIG_CRASH_DUMP) && defined(CONFIG_HYPERV)
+	if (hv_is_hyperv_initialized()) {
+		extern void hv_crash_cleanup(struct pt_regs *regs);
+		hv_crash_cleanup(regs);
+	}
+#endif
 
 	/* shutdown non-crashing cpus */
 	crash_smp_send_stop();
