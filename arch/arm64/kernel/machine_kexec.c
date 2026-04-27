@@ -215,14 +215,25 @@ void machine_crash_shutdown(struct pt_regs *regs)
 	local_irq_disable();
 #if defined(CONFIG_CRASH_DUMP) && defined(CONFIG_HYPERV)
 	if (hv_is_hyperv_initialized()) {
-		extern void hv_crash_cleanup(struct pt_regs *regs);
-		hv_crash_cleanup(regs);
+		extern void hv_crash_cleanup_pre_stop(struct pt_regs *regs);
+		hv_crash_cleanup_pre_stop(regs);
 	}
 #endif
 
-
 	/* shutdown non-crashing cpus */
 	crash_smp_send_stop();
+
+#if defined(CONFIG_CRASH_DUMP) && defined(CONFIG_HYPERV)
+	/*
+	 * Reset Guest OS ID only after all secondary CPUs are stopped.
+	 * Zeroing GUEST_OS_ID while other CPUs are alive can confuse
+	 * the hypervisor. This matches the x86 ordering.
+	 */
+	if (hv_is_hyperv_initialized()) {
+		extern void hv_crash_cleanup_post_stop(void);
+		hv_crash_cleanup_post_stop();
+	}
+#endif
 
 	/* for crashing cpu */
 	crash_save_cpu(regs, smp_processor_id());

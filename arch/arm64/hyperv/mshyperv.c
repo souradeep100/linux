@@ -39,7 +39,8 @@ void hv_kexec_cleanup_post_cpus(void);
 #endif
 
 #ifdef CONFIG_CRASH_DUMP
-void hv_crash_cleanup(struct pt_regs *regs);
+void hv_crash_cleanup_pre_stop(struct pt_regs *regs);
+void hv_crash_cleanup_post_stop(void);
 #endif
 static bool hyperv_initialized;
 static void (*hv_kexec_handler)(void);
@@ -236,21 +237,34 @@ EXPORT_SYMBOL_GPL(hv_kexec_cleanup_post_cpus);
  * Called from machine_crash_shutdown() in machine_kexec.c to perform
  * Hyper-V cleanup during a kernel crash.
  */
-void hv_crash_cleanup(struct pt_regs *regs)
+void hv_crash_cleanup_pre_stop(struct pt_regs *regs)
 {
-       pr_info("SYNIC-TRACE: hv_crash_cleanup() entry\n");
+	pr_info("SYNIC-TRACE: hv_crash_cleanup_pre_stop() entry\n");
 
-       if (hv_crash_handler)
-               hv_crash_handler(regs);
+	if (hv_crash_handler)
+		hv_crash_handler(regs);
 
-       /* Clean up the current CPU's stimer and SynIC */
-       hv_stimer_cleanup(smp_processor_id());
-       hv_hyp_synic_disable_regs(smp_processor_id());
+	/* Clean up the current CPU's stimer and SynIC */
+	hv_stimer_cleanup(smp_processor_id());
+	hv_hyp_synic_disable_regs(smp_processor_id());
 
-       /* Disable the hypercall page during crash (only 1 active CPU) */
-       hyperv_cleanup();
-
-       pr_info("SYNIC-TRACE: hv_crash_cleanup() done\n");
+	pr_info("SYNIC-TRACE: hv_crash_cleanup_pre_stop() done\n");
 }
-EXPORT_SYMBOL_GPL(hv_crash_cleanup);
+EXPORT_SYMBOL_GPL(hv_crash_cleanup_pre_stop);
+
+void hv_crash_cleanup_post_stop(void)
+{
+	pr_info("SYNIC-TRACE: hv_crash_cleanup_post_stop() entry\n");
+
+	/*
+	 * Reset Guest OS ID after crash_smp_send_stop() has halted all
+	 * other CPUs.  Zeroing GUEST_OS_ID while secondary CPUs are
+	 * still alive can confuse the hypervisor -- match the x86
+	 * ordering where hyperv_cleanup() runs after CPU stop.
+	 */
+	hyperv_cleanup();
+
+	pr_info("SYNIC-TRACE: hv_crash_cleanup_post_stop() done\n");
+}
+EXPORT_SYMBOL_GPL(hv_crash_cleanup_post_stop);
 #endif /* CONFIG_CRASH_DUMP */
