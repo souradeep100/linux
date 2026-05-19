@@ -18,6 +18,8 @@
 #include <linux/vfio_pci_core.h>
 #if IS_ENABLED(CONFIG_X86_64)
 #include <asm/apic.h>
+#else
+#include <linux/msi.h>
 #endif
 #include <asm/mshyperv.h>
 
@@ -27,7 +29,7 @@
 
 static struct workqueue_struct *irqfd_cleanup_wq;
 
-#if IS_ENABLED(CONFIG_X86_64)
+//#if IS_ENABLED(CONFIG_X86_64)
 
 static int mshv_parse_mshv_irqfd(struct mshv_irqfd *irqfd,
 				 struct pci_dev **out_pdev,
@@ -150,7 +152,11 @@ static int mshv_map_device_interrupt(u64 ptid, union hv_device_id hv_devid,
 	irq_input->device_id = hv_devid.as_uint64;
 
 	intdesc = &irq_input->interrupt_descriptor;
+#if IS_ENABLED(CONFIG_X86_64)
 	intdesc->interrupt_type = HV_X64_INTERRUPT_TYPE_FIXED;
+#else
+	intdesc->interrupt_type = HV_ARM64_INTERRUPT_TYPE_FIXED;
+#endif
 	intdesc->vector_count = 1;
 	intdesc->target.vector = ginfo->lapic_vector;
 	intdesc->trigger_mode = HV_INTERRUPT_TRIGGER_MODE_EDGE;
@@ -461,12 +467,12 @@ static void mshv_pthru_dev_irq_undo(struct mshv_irqfd *irqfd)
 	mshv_chk_unmap_irq(hv_devid, irqdata);
 }
 
-#else /* IS_ENABLED(CONFIG_X86_64) */
+//#else /* IS_ENABLED(CONFIG_X86_64) */
 
-static void mshv_pthru_dev_irq_remap(struct mshv_irqfd *irqfd) { }
-static void mshv_pthru_dev_irq_undo(struct mshv_irqfd *irqfd) { }
+//static void mshv_pthru_dev_irq_remap(struct mshv_irqfd *irqfd) { }
+//static void mshv_pthru_dev_irq_undo(struct mshv_irqfd *irqfd) { }
 
-#endif /* IS_ENABLED(CONFIG_X86_64) */
+//#endif /* IS_ENABLED(CONFIG_X86_64) */
 
 void mshv_register_irq_ack_notifier(struct mshv_partition *partition,
 				    struct mshv_irq_ack_notifier *mian)

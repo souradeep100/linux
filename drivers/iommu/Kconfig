@@ -40,6 +40,13 @@ config IOMMU_IO_PGTABLE_LPAE
 	  sizes at both stage-1 and stage-2, as well as address spaces
 	  up to 48-bits in size.
 
+config HYPERV_IOMMU_ARM
+        bool "Hyper-V IOMMU Unit (ARM64)"
+        depends on HYPERV && ARM64
+        select IOMMU_API
+        help
+          Hyper-V pseudo IOMMU unit for ARM64 root partition.
+
 config IOMMU_IO_PGTABLE_LPAE_KUNIT_TEST
 	tristate "KUnit tests for LPAE"
 	depends on IOMMU_IO_PGTABLE_LPAE && KUNIT

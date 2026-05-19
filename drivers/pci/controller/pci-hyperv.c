@@ -574,11 +574,11 @@ struct hv_pci_compl {
 
 static void hv_pci_onchannelcallback(void *context);
 
+static bool hv_vmbus_pci_device(struct pci_bus *pbus);
 #ifdef CONFIG_X86
 #define DELIVERY_MODE		APIC_DELIVERY_MODE_FIXED
 #define HV_MSI_CHIP_FLAGS	MSI_CHIP_FLAG_SET_ACK
 
-static bool hv_vmbus_pci_device(struct pci_bus *pbus);
 
 static int hv_pci_irqchip_init(void)
 {
