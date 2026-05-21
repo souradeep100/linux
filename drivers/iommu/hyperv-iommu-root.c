@@ -209,11 +209,9 @@ u64 hv_build_devid_oftype(struct pci_dev *pdev, enum hv_device_type type)
 		else
 			return hv_build_devid_type_logical(pdev);
 	} else if (type == HV_DEVICE_TYPE_PCI)
-#ifdef CONFIG_X86
 		return hv_build_devid_type_pci(pdev);
-#else
-		return 0;
-#endif
+
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(hv_build_devid_oftype);

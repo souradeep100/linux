@@ -86,6 +86,17 @@ config MSHV_ROOT
 
 	  If unsure, say N.
 
+config MSHV_ARM64_IRQDOMAIN
+	bool "Microsoft Hyper-V arm64 irqdomain support"
+	depends on ARM64 && MSHV_ROOT && PCI_MSI
+	default n
+	help
+	  Select this option to build arch/arm64 Hyper-V irqdomain support.
+
+	  This is intended for arm64 root partition interrupt mapping work.
+
+	  If unsure, say N.
+
 config MSHV_VTL
 	tristate "Microsoft Hyper-V VTL driver"
 	depends on X86_64 && HYPERV_VTL_MODE

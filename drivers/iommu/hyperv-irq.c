@@ -14,11 +14,16 @@
 #include <linux/iommu.h>
 #include <linux/module.h>
 
+#if defined(CONFIG_X86_64)
 #include <asm/apic.h>
+#endif
 #include <asm/cpu.h>
 #include <asm/hw_irq.h>
+#if defined(CONFIG_X86_64)
 #include <asm/io_apic.h>
+
 #include <asm/irq_remapping.h>
+#endif
 #include <asm/hypervisor.h>
 #include <asm/mshyperv.h>
 

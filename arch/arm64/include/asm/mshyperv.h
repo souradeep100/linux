@@ -52,6 +52,12 @@ static inline u64 hv_get_non_nested_msr(unsigned int reg)
 {
 	return hv_get_msr(reg);
 }
+#ifdef CONFIG_PCI_MSI
+u64 hv_build_devid_type_pci(struct pci_dev *pdev);
+int hv_map_msi_interrupt(struct irq_data *data,
+			 struct hv_interrupt_entry *out_entry);
+struct irq_domain *hv_create_pci_msi_domain(void);
+#endif
 
 /* SMCCC hypercall parameters */
 #define HV_SMCCC_FUNC_NUMBER	1
