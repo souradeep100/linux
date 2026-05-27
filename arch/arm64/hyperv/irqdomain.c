@@ -12,6 +12,7 @@
 #include <linux/pci.h>
 #include <linux/irq.h>
 #include <linux/export.h>
+#include <linux/irqchip/arm-gic-v3.h>
 #include <linux/irqchip/irq-msi-lib.h>
 #include <asm/mshyperv.h>
 #include <linux/acpi.h>
@@ -142,27 +143,61 @@ static int get_rid_cb(struct pci_dev *pdev, u16 alias, void *data)
 
 u64 hv_build_devid_type_pci(struct pci_dev *pdev)
 {
-    union hv_device_id hv_devid;
-    struct rid_data data = {
-            .bridge = NULL,
-            .rid = PCI_DEVID(pdev->bus->number, pdev->devfn)
-    };
+	union hv_device_id hv_devid;
+	struct rid_data data = {
+		.bridge = NULL,
+		.rid = PCI_DEVID(pdev->bus->number, pdev->devfn)
+	};
 
-    pci_for_each_dma_alias(pdev, get_rid_cb, &data);
+	pci_for_each_dma_alias(pdev, get_rid_cb, &data);
 
-    hv_devid.as_uint64 = 0;
-    hv_devid.device_type = HV_DEVICE_TYPE_PCI;
-    hv_devid.pci.segment = pci_domain_nr(pdev->bus);
+	hv_devid.as_uint64 = 0;
+	hv_devid.device_type = HV_DEVICE_TYPE_PCI;
+	hv_devid.pci.segment = pci_domain_nr(pdev->bus);
 
-    hv_devid.pci.bdf.bus = PCI_BUS_NUM(data.rid);
-    hv_devid.pci.bdf.device = PCI_SLOT(data.rid);
-    hv_devid.pci.bdf.function = PCI_FUNC(data.rid);
-    hv_devid.pci.source_shadow = HV_SOURCE_SHADOW_NONE;
+	hv_devid.pci.bdf.bus = PCI_BUS_NUM(data.rid);
+	hv_devid.pci.bdf.device = PCI_SLOT(data.rid);
+	hv_devid.pci.bdf.function = PCI_FUNC(data.rid);
+	hv_devid.pci.source_shadow = HV_SOURCE_SHADOW_NONE;
 
-    return hv_devid.as_uint64;
+	return hv_devid.as_uint64;
 }
 
 EXPORT_SYMBOL_GPL(hv_build_devid_type_pci);
+
+/*
+ * Map the MSI doorbell page into the default S2 device domain so the device's
+ * MSI write does not fault in the SMMU. For pthru devices the iommu driver
+ * manages its own S2 domain; this path is only taken for the default domain.
+ */
+static u64 hv_iommu_map_msi_doorbell(phys_addr_t paddr, unsigned long npages,
+				     u32 map_flags)
+{
+	struct hv_input_map_device_gpa_pages *input;
+	unsigned long flags, pfn;
+	u64 status;
+	int i;
+
+	local_irq_save(flags);
+	input = *this_cpu_ptr(hyperv_pcpu_input_arg);
+	memset(input, 0, sizeof(*input));
+
+	input->device_domain.partition_id = HV_PARTITION_ID_SELF;
+	input->device_domain.domain_id.type = HV_DEVICE_DOMAIN_TYPE_S2;
+	input->device_domain.domain_id.id = HV_DEVICE_DOMAIN_ID_S2_DEFAULT;
+	input->map_flags = map_flags;
+	input->target_device_va_base = paddr;
+
+	pfn = paddr >> HV_HYP_PAGE_SHIFT;
+	for (i = 0; i < npages; i++, pfn++)
+		input->gpa_page_list[i] = pfn;
+
+	status = hv_do_rep_hypercall(HVCALL_MAP_DEVICE_GPA_PAGES, npages, 0,
+				     input, NULL);
+
+	local_irq_restore(flags);
+	return status;
+}
 
 static unsigned int hv_msi_get_int_vector(struct irq_data *irqd)
 {
@@ -271,6 +306,20 @@ static void hv_irq_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 
 	data->chip_data = stored_entry;
 	entry_to_msi_msg(data->chip_data, msg);
+
+	/*
+	 * Map the MSI doorbell page into the default S2 device domain so the
+	 * device's MSI write reaches the GIC ITS through the SMMU.
+	 */
+	{
+		u64 status;
+
+		status = hv_iommu_map_msi_doorbell(stored_entry->msi_entry.address & HV_HYP_PAGE_MASK,
+						   1, HV_MAP_GPA_READABLE | HV_MAP_GPA_WRITABLE);
+		if (!hv_result_success(status))
+			pr_err("%s: failed to map MSI doorbell, status 0x%llx\n",
+			       __func__, status);
+	}
 }
 
 static int hv_unmap_msi_interrupt(struct pci_dev *pdev,
@@ -303,16 +352,77 @@ static void hv_teardown_msi_irq(struct pci_dev *pdev, struct irq_data *irqd)
 }
 
 /*
+ * Hyper-V root: enable an LPI by writing its byte in the redistributor LPI
+ * configuration table (ENABLED | GROUP1) and invalidating the cached entry
+ * via GICR_INVALLR on the target redistributor.  We cannot delegate to the
+ * parent's irq_unmask because dom0 does not enumerate an ITS and the
+ * standard GIC-v3 LPI chip ops are not on this hierarchy.
+ *
+ * The cache-flushing flag is private to drivers/irqchip/irq-gic-common.h
+ * (RDIST_FLAGS_PROPBASE_NEEDS_FLUSHING = 1<<0); we cannot include that
+ * driver-internal header from arch/arm64/hyperv/, so redefine locally.
+ * Keep the value in sync with irq-gic-common.h.
+ */
+#define HV_RDIST_FLAGS_PROPBASE_NEEDS_FLUSHING	(1U << 0)
+
+static void hv_irq_unmask(struct irq_data *irqd)
+{
+	struct rdists *rdists = gic_get_rdists();
+	void *prop_va = rdists->prop_table_va;
+	const struct cpumask *aff;
+	irq_hw_number_t hwirq;
+	int cpu;
+	u8 *cfg;
+
+	if (!irqd->parent_data) {
+		pr_debug("%s: parent_data NULL\n", __func__);
+		return;
+	}
+
+	hwirq = irqd->parent_data->hwirq;
+	aff = irq_data_get_effective_affinity_mask(irqd);
+	cpu = cpumask_first(aff);
+
+	cfg = (u8 *)prop_va + hwirq - 8192;
+	*cfg |= LPI_PROP_ENABLED | LPI_PROP_GROUP1;
+
+	if (rdists->flags & HV_RDIST_FLAGS_PROPBASE_NEEDS_FLUSHING)
+		gic_flush_dcache_to_poc(cfg, sizeof(*cfg));
+	else
+		dsb(ishst);
+
+	gic_write_lpir(0, per_cpu_ptr(rdists->rdist, cpu)->rd_base + GICR_INVALLR);
+
+	pci_msi_unmask_irq(irqd);
+}
+
+/*
+ * Microsoft Hypervisor doesn't allow root to change the vector or specify
+ * VPs outside the set used during initial map.  Retarget is achieved by
+ * unmap+remap in compose_msi_msg on the next delivery.  Just record the
+ * new effective affinity here.
+ */
+static int hv_irq_set_affinity(struct irq_data *irqd,
+			       const struct cpumask *mask, bool force)
+{
+	int cpu = cpumask_first(mask);
+
+	irq_data_update_effective_affinity(irqd, cpumask_of(cpu));
+	return IRQ_SET_MASK_OK_DONE;
+}
+
+/*
  * IRQ Chip for MSI PCI/PCI-X/PCI-Express Devices,
  * which implement the MSI or MSI-X Capability Structure.
  */
 static struct irq_chip hv_pci_msi_controller = {
 	.name			= "HV-PCI-MSI",
 	.irq_compose_msi_msg	= hv_irq_compose_msi_msg,
-	.irq_set_affinity = irq_chip_set_affinity_parent,
-	.irq_eoi = irq_chip_eoi_parent,
-	.irq_mask = irq_chip_mask_parent,
-	.irq_unmask = irq_chip_unmask_parent
+	.irq_set_affinity	= hv_irq_set_affinity,
+	.irq_ack		= irq_chip_ack_parent,
+	.irq_eoi		= irq_chip_eoi_parent,
+	.irq_mask		= pci_msi_mask_irq,
+	.irq_unmask		= hv_irq_unmask,
 };
 
 static bool hv_init_dev_msi_info(struct device *dev, struct irq_domain *domain,
@@ -342,12 +452,17 @@ static struct msi_parent_ops hv_msi_parent_ops = {
 	.prefix			= "HV-",
 	.init_dev_msi_info	= hv_init_dev_msi_info,
 };
-#define HV_PCI_MSI_SPI_START 64
-#define HV_PCI_MSI_SPI_NR (1020 - HV_PCI_MSI_SPI_START)
+/*
+ * Hyper-V root PCI MSI is delivered as GIC LPIs (Hyper-V owns the physical
+ * ITS; dom0 sees no ITS but still consumes LPI INTIDs at the redistributor).
+ * LPI INTIDs start at 8192; we carve a window beginning at 0x2000.
+ */
+#define HV_PCI_MSI_LPI_START	0x2000
+#define HV_PCI_MSI_LPI_NR	(1U << 16)
 
 struct hv_pci_chip_data {
-           DECLARE_BITMAP(spi_map, HV_PCI_MSI_SPI_NR);
-           struct mutex map_lock;
+	DECLARE_BITMAP(lpi_map, HV_PCI_MSI_LPI_NR);
+	struct mutex	map_lock;
 };
 
 static int hv_pci_vec_alloc_device_irq(struct irq_domain *domain,
@@ -358,12 +473,12 @@ static int hv_pci_vec_alloc_device_irq(struct irq_domain *domain,
 	int index;
 
 	mutex_lock(&chip_data->map_lock);
-	index = bitmap_find_free_region(chip_data->spi_map, HV_PCI_MSI_SPI_NR,
+	index = bitmap_find_free_region(chip_data->lpi_map, HV_PCI_MSI_LPI_NR,
 					get_count_order(nr_irqs));
 	mutex_unlock(&chip_data->map_lock);
 	if (index < 0)
 		return -ENOSPC;
-	*hwirq = index + HV_PCI_MSI_SPI_START;
+	*hwirq = index + HV_PCI_MSI_LPI_START;
 	return 0;
 }
 
@@ -372,26 +487,19 @@ static int hv_pci_vec_irq_gic_domain_alloc(struct irq_domain *domain,
 					   irq_hw_number_t hwirq)
 {
 	struct irq_fwspec fwspec;
-	struct irq_data *d;
-	int ret;
 
+	/*
+	 * LPI INTIDs have no OF GIC binding (LPIs are dynamically assigned,
+	 * with no DT representation).  On Hyper-V arm64 the root partition
+	 * boots via ACPI; the parent fwnode is the ACPI GSI dispatcher and
+	 * the 2-parameter (hwirq, type) form is the only valid encoding.
+	 */
 	fwspec.fwnode = domain->parent->fwnode;
-	if (is_of_node(fwspec.fwnode)) {
-		fwspec.param_count = 3;
-		fwspec.param[0] = 0;
-		fwspec.param[1] = hwirq - 32;
-		fwspec.param[2] = IRQ_TYPE_EDGE_RISING;
-	} else {
-		fwspec.param_count = 2;
-		fwspec.param[0] = hwirq;
-		fwspec.param[1] = IRQ_TYPE_EDGE_RISING;
-	}
-	ret = irq_domain_alloc_irqs_parent(domain, virq, 1, &fwspec);
-	if (ret)
-		return ret;
+	fwspec.param_count = 2;
+	fwspec.param[0] = hwirq;
+	fwspec.param[1] = IRQ_TYPE_EDGE_RISING;
 
-	d = irq_domain_get_irq_data(domain->parent, virq);
-	return d->chip->irq_set_type(d, IRQ_TYPE_EDGE_RISING);
+	return irq_domain_alloc_irqs_parent(domain, virq, 1, &fwspec);
 }
 
 static void hv_pci_vec_irq_free(struct irq_domain *domain,
@@ -401,11 +509,11 @@ static void hv_pci_vec_irq_free(struct irq_domain *domain,
 {
 	struct hv_pci_chip_data *chip_data = domain->host_data;
 	struct irq_data *d = irq_domain_get_irq_data(domain, virq);
-	int first = d->hwirq - HV_PCI_MSI_SPI_START;
+	int first = d->hwirq - HV_PCI_MSI_LPI_START;
 	int i;
 
 	mutex_lock(&chip_data->map_lock);
-	bitmap_release_region(chip_data->spi_map,
+	bitmap_release_region(chip_data->lpi_map,
 			      first,
 			      get_count_order(nr_bm_irqs));
 	mutex_unlock(&chip_data->map_lock);
@@ -546,7 +654,7 @@ struct irq_domain * __init hv_create_pci_msi_domain(void)
 			.ops = &hv_msi_domain_ops,
 			.parent = irq_domain_parent, /* GIC distributor */
 			.host_data = chip_data,
-			.size = HV_PCI_MSI_SPI_NR,
+			.size = HV_PCI_MSI_LPI_NR,
 		};
 		msi_create_parent_irq_domain(&info, &hv_msi_parent_ops);
 	});

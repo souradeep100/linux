@@ -5421,7 +5421,12 @@ static int redist_disable_lpis(void)
 
 int its_cpu_init(void)
 {
-	if (!list_empty(&its_nodes)) {
+	/*
+	 * TODO: hack — force LPI redist enable even when no ITS is
+	 * enumerated, because the HV PCI MSI irqdomain uses LPIs without
+	 * a discoverable ITS. Revisit once a cleaner gating exists.
+	 */
+	if (!list_empty(&its_nodes) || true) {
 		int ret;
 
 		ret = redist_disable_lpis();
@@ -5829,6 +5834,11 @@ int __init its_init(struct fwnode_handle *handle, struct rdists *rdists,
 	gic_rdists = rdists;
 
 	lpi_prop_prio = irq_prio;
+
+	err = allocate_lpi_tables();
+	if (err)
+		return err;
+
 	its_parent = parent_domain;
 	of_node = to_of_node(handle);
 	if (of_node)
@@ -5840,10 +5850,6 @@ int __init its_init(struct fwnode_handle *handle, struct rdists *rdists,
 		pr_warn("ITS: No ITS available, not enabling LPIs\n");
 		return -ENXIO;
 	}
-
-	err = allocate_lpi_tables();
-	if (err)
-		return err;
 
 	list_for_each_entry(its, &its_nodes, entry) {
 		has_v4 |= is_v4(its);

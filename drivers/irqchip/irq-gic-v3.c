@@ -252,6 +252,11 @@ enum gic_intid_range {
 	__INVALID_RANGE__
 };
 
+struct rdists *gic_get_rdists(void)
+{
+	return &gic_data.rdists;
+}
+
 static enum gic_intid_range __get_intid_range(irq_hw_number_t hwirq)
 {
 	switch (hwirq) {
